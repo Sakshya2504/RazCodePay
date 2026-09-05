@@ -1,9 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import AuthGate from './AuthGate.jsx';
+import Phase2Panel from './Phase2Panel.jsx';
 import './styles.css';
 
-// Inject the production access token without coupling the existing dashboard to auth internals.
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (input, init = {}) => {
   const url = typeof input === 'string' ? input : input.url;
@@ -23,4 +23,8 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<React.StrictMode><ErrorBoundary><AuthGate /></ErrorBoundary></React.StrictMode>);
+function Root() {
+  return <React.StrictMode><ErrorBoundary><AuthGate /><Phase2Panel /></ErrorBoundary></React.StrictMode>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
