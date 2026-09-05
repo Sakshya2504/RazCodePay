@@ -26,7 +26,31 @@ This scope satisfies the Track 03 loop: **detect → diagnose → choose → exe
 | Revenue genuinely recovered | A later Razorpay success event is correlated to the original case. | Payment ID, recovered amount, attribution window. |
 | Harm prevented | Opt-out, quiet hours, caps, success, expiry, or manual stop closes scheduled work. | Stopping-rule audit entries. |
 
-### 1.2 Non-goals for the buildathon MVP
+### 1.2 Technology stack
+
+The implementation is intentionally centered on the team's existing strengths. No framework is introduced unless it provides a clear benefit to the Track 3 workflow.
+
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Frontend | **React.js, HTML, CSS** | Merchant dashboard, case timeline, policy controls, approval queue, recovery metrics. |
+| Frontend tooling | **Vite** | Fast local development/build for the React application. |
+| Backend/API | **Node.js + Express.js** | REST APIs, Razorpay webhook ingress, authentication, policy/case endpoints. |
+| Worker/orchestration | **Node.js** | Event processing, scheduled recovery attempts, stopping-rule checks, idempotency, audit writes. |
+| Database | **MongoDB** | Event log, recovery cases, attempts, policies, audit trail, attribution and demo data. |
+| AI/ML | **Python, Pandas, NumPy, Scikit-learn** | Revenue-risk/recoverability scoring, batch analysis and feature generation. |
+| AI reasoning | **LLM API** | Selects/ranks only policy-approved interventions and returns structured recommendations. |
+| Payment platform | **Razorpay Test APIs + Webhooks** | Source of truth for payment state and verified recovery. |
+| Visualization | **React charts + Matplotlib** | Merchant metrics and offline/batch analysis. |
+| Version control | **Git + GitHub** | Source control and buildathon submission. |
+
+### 1.3 Why this stack
+
+- **React + Express + MongoDB** keeps the main application inside the team's MERN experience and avoids unnecessary framework overhead.
+- **Python + Scikit-learn** is isolated to the ML/scoring workload, where Pandas/NumPy provide the strongest fit. The first MVP can run Python scoring as a local/service process without forcing Python into every backend component.
+- **Node.js worker** handles asynchronous recovery orchestration and scheduled jobs. For the hackathon MVP, the durable job state lives in MongoDB; a separate queue product is not required.
+- **LLM reasoning is bounded by deterministic policy code.** The model never receives authority to send payment actions or contact customers directly.
+
+### 1.4 Non-goals for the buildathon MVP
 
 - Handling card data, UPI credentials, or customer authentication data.
 - Calling an API that charges a customer or bypasses Razorpay's customer-authorised payment flow.
@@ -48,24 +72,23 @@ This scope satisfies the Track 03 loop: **detect → diagnose → choose → exe
 
 ```mermaid
 flowchart LR
-    R[Razorpay\nPayments / Subscriptions / Invoices] -->|signed webhooks| W[Webhook ingress]
+    R[Razorpay\nPayments / Subscriptions / Invoices] -->|signed webhooks| W[Express webhook ingress]
     C[Merchant checkout\nfirst-party events] --> W
     W --> V[Verify + persist\nraw event]
-    V --> Q[(Durable job queue)]
-    Q --> N[Normalise + deduplicate]
-    N --> K[(PostgreSQL\ncase, event, audit data)]
-    N --> D[Risk detector\nand case creator]
+    V --> Q[(MongoDB\ndurable event + job state)]
+    Q --> N[Node.js worker\nnormalise + deduplicate]
+    N --> D[Risk detector\nPython + Scikit-learn]
     D --> X[Context resolver]
     X --> P[Policy engine\nnon-AI gate]
-    P -->|allowed candidates only| A[AI decision service]
+    P -->|allowed candidates only| A[AI decision service\nLLM API]
     A --> P
-    P --> E[Workflow executor]
+    P --> E[Workflow executor\nNode.js]
     E --> M[Email / WhatsApp / SMS\nadapter]
     E --> RP[Razorpay supported\nreminder/API adapter]
     E --> H[Human review queue]
     R -->|later success/terminal event| W
     N --> F[Recovery attribution\n+ analytics]
-    K --> UI[Merchant dashboard]
+    Q --> UI[React merchant dashboard]
     F --> UI
 ```
 
@@ -73,12 +96,13 @@ flowchart LR
 
 | Component | Responsibility | Cannot do |
 | --- | --- | --- |
-| Web app | Merchant setup, policy controls, case view, approval queue, metrics. | Receive secrets or decide payment success. |
-| API service | Authenticated merchant APIs, webhook ingress, case query/mutation, RBAC. | Block while performing LLM calls or sending messages. |
-| Webhook verifier | Read exact raw bytes, verify Razorpay signature, store once, acknowledge quickly. | Trust payload fields before verification. |
-| Worker service | Consume events/jobs, build cases, calculate decisions, execute scheduled attempts. | Perform actions without policy and idempotency checks. |
+| React web app | Merchant setup, policy controls, case view, approval queue, metrics. | Receive secrets or decide payment success. |
+| Express API service | Authenticated merchant APIs, webhook ingress, case query/mutation, RBAC. | Perform blocking LLM calls or send customer messages directly. |
+| Razorpay webhook verifier | Read exact raw bytes, verify signature, store once, acknowledge quickly. | Trust payload fields before verification. |
+| Node.js worker | Consume persisted jobs, build cases, calculate decisions, execute scheduled attempts. | Perform actions without policy and idempotency checks. |
 | Case service | Maintain case state machine and entity correlation. | Overwrite event/audit history. |
 | Policy engine | Apply deterministic merchant rules and hard platform guardrails. | Generate unbounded action types. |
+| Python ML/scoring module | Generate deterministic risk/recoverability scores from structured case features. | Contact customers, call payment APIs, or change payment state. |
 | AI decision service | Classify context, rank allowed interventions, write approved-template variables/explanations. | Directly call a messaging or payment provider. |
 | Workflow executor | Persist planned attempt, acquire idempotency lock, call one adapter, record result. | Send after a case reaches any terminal/stop state. |
 | Connector adapters | Razorpay, email, SMS/WhatsApp, CRM implementation details. | Change core recovery policy. |
@@ -86,24 +110,23 @@ flowchart LR
 
 ### 3.2 Deployment topology
 
-For the demo, run `web`, `api`, and `worker` containers behind HTTPS with PostgreSQL and Redis. Cloud object storage is optional but recommended for encrypted raw webhook payloads and generated evidence files. A managed queue may replace Redis/BullMQ later; its interface remains `publish(event)` / `consume(topic)`.
+For the demo, run the React web app, Express API, and Node worker as separate processes. MongoDB is the transactional source of truth. Python scoring can run as a lightweight internal service/process used by the worker; it does not need to be exposed to the public network.
 
 ```mermaid
 flowchart TB
-    I[Internet] --> LB[HTTPS load balancer / reverse proxy]
-    LB --> WEB[Next.js web]
-    LB --> API[Fastify API]
-    API --> PG[(PostgreSQL)]
-    API --> REDIS[(Redis)]
-    API --> OBJ[(Encrypted object storage)]
-    REDIS --> WORKER[Node worker / BullMQ]
-    WORKER --> PG
+    I[Internet] --> HTTPS[HTTPS]
+    HTTPS --> WEB[React + Vite web]
+    HTTPS --> API[Node.js + Express API]
+    API --> DB[(MongoDB)]
+    API --> WORKER[Node.js worker]
+    WORKER --> DB
+    WORKER --> ML[Python\nPandas + NumPy + Scikit-learn]
     WORKER --> LLM[LLM provider]
     WORKER --> MSG[Message provider]
-    WORKER --> RZ[Razorpay APIs]
+    WORKER --> RZ[Razorpay Test APIs]
 ```
 
-Use one relational database for the MVP because cases, policies, attempts, approvals, and financial attribution need atomic writes and joins. Redis holds only queues, short-lived locks, and rate-limit counters; it is never the source of truth. Isolate model calls and external adapters behind interfaces so they can be replaced without changing the core state machine.
+For the hackathon MVP, MongoDB stores durable jobs and retry metadata so a second queue product is optional. If scale later demands it, a dedicated queue can be introduced behind the same worker interface without changing the domain state machine.
 
 ## 4. Event intake and truth model
 
@@ -130,9 +153,9 @@ Razorpay documents subscription events such as `subscription.pending`, `subscrip
 2. Look up the merchant webhook secret by endpoint/account configuration; do not accept a merchant ID from the payload as authentication.
 3. Verify the Razorpay signature with a constant-time comparison over the raw body.
 4. Calculate `payload_sha256`; derive `dedupe_key = razorpay:{account_id}:{event}:{payload_sha256}`. If Razorpay exposes a stable event ID in the payload/header for the selected integration, include it and prefer it.
-5. In one database transaction, insert `incoming_events` with the raw payload pointer and insert an outbox row only if `dedupe_key` is new.
+5. In one MongoDB transaction, insert `incoming_events` with the raw payload pointer and insert a durable job/outbox document only if `dedupe_key` is new.
 6. Return `2xx` after durable persistence. A worker, not the request process, handles event interpretation.
-7. Publish the transactional outbox entry. A periodic publisher retries unpublished rows.
+7. Publish/process the durable job. A periodic worker retry loop handles unpublished or failed jobs.
 
 Invalid signatures return `401` and emit a security audit event with no body content. Duplicate events return `200` and are recorded as duplicates. Temporary storage/database faults return `5xx` so Razorpay can retry. Never log raw secrets, authentication headers, full card data, or the full payload in application logs.
 
@@ -244,11 +267,12 @@ For MVP, enable only `wait`, `send_payment_reminder`, `resend_invoice`, `request
 ### 6.2 Two-stage decision flow
 
 1. **Feature builder (deterministic):** calculate amount band, age, event/failure category, prior successful history, previous attempt count, last contact time, invoice/subscription state, consent, and merchant policy. Redact or tokenise unnecessary PII.
-2. **Policy pre-filter:** derive the allowed actions, allowed channels, maximum contact count, approved template IDs, and whether approval is required.
-3. **AI recommendation:** pass only the minimal context plus the allowed action/template IDs. Require strict JSON conforming to a server-side schema.
-4. **Policy post-filter:** validate the proposed action, template, channel, schedule, and variables again. Convert any mismatch to `create_human_task` or `wait`.
-5. **Plan persistence:** write `recovery_decisions` including feature snapshot, policy version, model/version, prompt template version, structured output, selected action, and explanation.
-6. **Execution:** create an attempt only when due and all stopping rules still pass.
+2. **Risk scoring (Python):** use Pandas/NumPy feature preparation and an interpretable Scikit-learn model or rules-based baseline to estimate recoverability. The score helps rank cases; it never authorises an action.
+3. **Policy pre-filter:** derive the allowed actions, allowed channels, maximum contact count, approved template IDs, and whether approval is required.
+4. **AI recommendation:** pass only the minimal context plus the allowed action/template IDs. Require strict JSON conforming to a server-side schema.
+5. **Policy post-filter:** validate the proposed action, template, channel, schedule, and variables again. Convert any mismatch to `create_human_task` or `wait`.
+6. **Plan persistence:** write `recovery_decisions` including feature snapshot, risk score/model metadata, policy version, model/version, prompt template version, structured output, selected action, and explanation.
+7. **Execution:** create an attempt only when due and all stopping rules still pass.
 
 Example model contract:
 
@@ -265,7 +289,7 @@ Example model contract:
 }
 ```
 
-The API validates this JSON with Zod/JSON Schema. Free-text output is never executed. Model calls use a low-temperature setting, time out quickly, have a circuit breaker, and record a redacted prompt/response hash rather than unrestricted sensitive content.
+The API validates this JSON with JSON Schema-style server-side validation. Free-text output is never executed. Model calls use a low-temperature setting, time out quickly, have a circuit breaker, and record a redacted prompt/response hash rather than unrestricted sensitive content.
 
 ### 6.3 Explainability shown to the merchant
 
@@ -282,15 +306,15 @@ The explanation comes from structured reason codes and policy facts, not an unco
 ```mermaid
 sequenceDiagram
     participant RP as Razorpay
-    participant WH as Webhook API
-    participant W as Worker
+    participant WH as Express Webhook API
+    participant W as Node Worker
     participant PE as Policy engine
     participant AI as AI service
     participant MX as Message adapter
-    participant DB as Case/audit DB
+    participant DB as MongoDB
 
     RP->>WH: payment.failed / subscription.pending (signed)
-    WH->>DB: raw event + outbox transaction
+    WH->>DB: raw event + durable job
     WH-->>RP: 2xx
     W->>DB: normalise, dedupe, find/create case
     W->>PE: derive allowed actions + gates
@@ -303,7 +327,7 @@ sequenceDiagram
     MX-->>W: provider message ID
     W->>DB: attempt sent
     RP->>WH: subscription.charged / payment.captured
-    WH->>DB: raw event + outbox
+    WH->>DB: raw event + durable job
     W->>DB: mark recovered, cancel future jobs, attribute value
 ```
 
@@ -339,26 +363,26 @@ Checkout telemetry must be first-party, consented, and minimal. Do not capture r
 
 ## 8. Data model
 
-All monetary values are integer minor units (`amount_minor`) plus ISO currency; do not use floating point. Timestamps are UTC `timestamptz`; the merchant's IANA timezone is stored separately for policies and display.
+All monetary values are integer minor units (`amount_minor`) plus ISO currency; do not use floating point. Timestamps are UTC BSON Date values; the merchant's IANA timezone is stored separately for policies and display.
 
-### 8.1 Core tables
+### 8.1 Core MongoDB collections
 
-| Table | Key fields | Important constraints/indexes |
+| Collection | Key fields | Important constraints/indexes |
 | --- | --- | --- |
 | `merchants` | `id`, Razorpay account reference, timezone, mode, status | Unique provider account per environment. |
-| `merchant_secrets` | `merchant_id`, secret reference, rotated_at | Store a KMS/secret-manager reference, never plaintext in normal queries. |
+| `merchant_secrets` | `merchant_id`, secret reference, rotated_at | Store a secret-manager reference, never plaintext in normal queries. |
 | `merchant_policies` | `id`, `merchant_id`, version, JSON rules, active_from/to | One active policy version; immutable after use. |
-| `incoming_events` | `id`, merchant, source, provider event/type, raw payload URI/hash, received_at | Unique `(merchant_id, dedupe_key)`; index `(merchant_id, occurred_at)`. |
-| `outbox` | `id`, aggregate type/id, topic, payload, published_at, attempts | Index unpublished rows; written transactionally with source event. |
+| `incoming_events` | `id`, merchant, source, provider event/type, raw payload URI/hash, received_at | Unique compound index `(merchant_id, dedupe_key)`; index `(merchant_id, occurred_at)`. |
+| `durable_jobs` | `id`, topic, aggregate type/id, payload, state, available_at, attempts | Index queued jobs by `(state, available_at)`; retry/backoff metadata. |
 | `payment_entities` | merchant, provider payment/order/subscription/invoice IDs, state, amount, raw snapshot hash | Unique provider entity ID per merchant/environment. |
 | `customers` | merchant, provider customer ID, pseudonymous display key, consent snapshot | Unique `(merchant_id, provider_customer_id)`; encrypt contact fields. |
 | `contact_preferences` | customer, channel, consent status/source/time, opted_out_at | Current preference index by `(customer_id, channel)`. |
 | `recovery_cases` | id, merchant, `case_key`, type, amount, currency, state, opened/closed timestamps, owner | Unique active key; index `(merchant_id, state, next_action_at)`. |
 | `case_entities` | case ID, entity type, provider ID, role | Unique link; supports many webhook entities per case. |
-| `recovery_decisions` | case, policy version, feature snapshot, model metadata, recommendation, selected action, reason codes | Append-only, ordered by case/time. |
+| `recovery_decisions` | case, policy version, feature snapshot, risk score/model metadata, recommendation, selected action, reason codes | Append-only, ordered by case/time. |
 | `recovery_attempts` | case, decision, action, channel, template, scheduled/sent timestamps, idempotency key, provider ID, status | Unique `idempotency_key`; index due attempts. |
 | `approvals` | attempt/case, requested by, reviewer, decision, expires_at | Only a pending current approval can unlock approval-required action. |
-| `audit_log` | merchant, case, actor type/id, event name, before/after hashes, trace ID, occurred_at | Append-only; partition/retain appropriately. |
+| `audit_log` | merchant, case, actor type/id, event name, before/after hashes, trace ID, occurred_at | Append-only; indexes by merchant/case/time. |
 | `recovery_attributions` | case, successful provider payment/invoice ID, amount, attributable amount, method, window | Unique on recovered entity to prevent double counting. |
 | `experiment_assignments` | merchant/customer/case, experiment, variant, assigned_at | Deterministic hash assignment; no late reassignment. |
 
@@ -381,21 +405,21 @@ erDiagram
 
 ### 8.3 Outbox and idempotency patterns
 
-- **Incoming webhook:** unique provider/dedupe key means only the first delivery publishes a domain event.
-- **Case creation:** unique `case_key` and `INSERT ... ON CONFLICT` converts concurrent signals into a merge operation.
-- **Workflow attempt:** `idempotency_key = sha256(case_id + action + sequence + policy_version)`. The attempt row is inserted before the provider call.
+- **Incoming webhook:** unique provider/dedupe key means only the first delivery publishes a domain event/job.
+- **Case creation:** unique `case_key` and MongoDB upsert with a unique index converts concurrent signals into a merge operation.
+- **Workflow attempt:** `idempotency_key = sha256(case_id + action + sequence + policy_version)`. The attempt document is inserted before the provider call.
 - **External request:** send the stored idempotency key to providers when supported; otherwise store provider response/request hash and never re-send a successful/unknown side effect without reconciliation.
 - **Recovery attribution:** a unique recovered payment/invoice entity may belong to one case only. If ambiguity remains, flag a human review rather than inflating recovered revenue.
 
 ## 9. API and event contracts
 
-All merchant-facing APIs require authenticated user/session access, enforce `merchant_id` from the session, and return no cross-tenant data. Use OpenAPI to generate the TypeScript client and validate inputs at the API boundary.
+All merchant-facing APIs require authenticated user/session access, enforce `merchant_id` from the session, and return no cross-tenant data. Validate request bodies at the Express API boundary and keep API contracts versioned.
 
 ### 9.1 External HTTP endpoints
 
 | Method/path | Caller | Purpose | Side-effect safeguards |
 | --- | --- | --- | --- |
-| `POST /v1/webhooks/razorpay` | Razorpay | Receive signed provider event. | Raw-body signature validation, dedupe, durable outbox. |
+| `POST /v1/webhooks/razorpay` | Razorpay | Receive signed provider event. | Raw-body signature validation, dedupe, durable job. |
 | `POST /v1/checkout-sessions` | Merchant backend | Begin an opted-in checkout correlation session. | Auth, server-generated ID, no payment details. |
 | `POST /v1/checkout-sessions/:id/events` | Merchant frontend/backend | Record allow-listed lifecycle event. | Session token, schema/rate validation. |
 | `GET /v1/cases` | Merchant UI | Filter/paginate recovery cases. | Tenant/RBAC filter, PII minimisation. |
@@ -405,11 +429,11 @@ All merchant-facing APIs require authenticated user/session access, enforce `mer
 | `PATCH /v1/policies/:id` | Merchant admin | Create a new version of recovery policy. | Validate hard platform limits; immutable version. |
 | `GET /v1/metrics/recovery` | Merchant UI | Batch funnel/value/attribution view. | Read model only; explicit filters/window. |
 
-### 9.2 Internal topics
+### 9.2 Internal topics/jobs
 
 | Topic | Producer | Consumer | Payload invariant |
 | --- | --- | --- | --- |
-| `event.received.v1` | outbox publisher | normaliser | References immutable incoming event. |
+| `event.received.v1` | durable job writer | normaliser | References immutable incoming event. |
 | `case.evaluate.v1` | normaliser/timer | decision worker | Case version and trigger event ID. |
 | `attempt.execute.v1` | planner | executor | Attempt ID, not raw free-text action. |
 | `attempt.reconcile.v1` | executor | reconciler | Provider response/unknown outcome needs resolution. |
@@ -458,14 +482,14 @@ Platform-level ceilings are not merchant-overridable: no action without valid co
 
 ### 11.1 Security controls
 
-- Use Razorpay test/live credentials only from a managed secret store. Rotate webhook secrets and API credentials without redeploying; log rotation metadata, not secret values.
+- Use Razorpay test/live credentials only from a managed secret store or environment secret configuration. Rotate webhook secrets and API credentials without redeploying where the hosting environment supports it; log rotation metadata, not secret values.
 - Enforce TLS; restrict the webhook route to documented provider network requirements where deployment allows it, while keeping signature verification mandatory.
 - Use raw-body HMAC verification and constant-time signature comparison. Reject body transformations before verification.
 - Separate `test` and `live` data at the tenant/environment level. UI carries a persistent environment badge and defaults to test mode.
-- Encrypt PII at rest, minimise it in events/prompts/logs, and enforce tenant-scoped database queries. Use per-environment encryption keys where practical.
+- Encrypt PII at rest, minimise it in events/prompts/logs, and enforce tenant-scoped MongoDB queries. Use per-environment encryption keys where practical.
 - RBAC: `viewer` (read), `operator` (stop/create task), `reviewer` (approve), `admin` (policy/integration), `system` (worker). Require a reviewer/admin for policy-gated actions.
 - Audit every policy edit, action plan, approval, send attempt, stop, model recommendation, and recovery attribution with actor, trace ID, timestamp, and policy version.
-- Rate-limit public ingestion and authenticated endpoints. Use queue back-pressure and a circuit breaker for each external provider.
+- Rate-limit public ingestion and authenticated endpoints. Use worker back-pressure and a circuit breaker for each external provider.
 
 ### 11.2 Customer and model safeguards
 
@@ -481,7 +505,7 @@ Platform-level ceilings are not merchant-overridable: no action without valid co
 | --- | --- |
 | Invalid webhook signature | Reject; create redacted security event; no case. |
 | Duplicate webhook | Acknowledge; no second side effect. |
-| Database/queue outage | Return retryable response before acknowledgement; outbox guarantees eventual publishing after persistence. |
+| Database outage | Return retryable response before acknowledgement; durable job state guarantees eventual processing after persistence. |
 | Razorpay API fetch unavailable | Keep case pending; retry with backoff; do not infer status. |
 | LLM unavailable/invalid | Fall back to deterministic `wait` or human task; do not contact. |
 | Message provider timeout | Mark outcome `unknown`; reconcile before any retry. |
@@ -540,53 +564,57 @@ Never represent synthetic recovered value as live merchant revenue.
 
 ## 13. Recommended repository structure
 
-Use a TypeScript monorepo so the web UI, API, workers, schemas, and policy evaluator share types. A Python scoring service is optional later; it is not necessary for the first agentic workflow.
+Use a simple MERN-oriented repository with a focused Python ML module. Shared contracts remain lightweight so the team can move quickly without a large monorepo.
 
 ```text
 RazCodePay/
 ├── architecture.md
 ├── README.md
-├── package.json
-├── pnpm-workspace.yaml
-├── docker-compose.yml
 ├── .env.example
-├── apps/
-│   ├── web/                       # Next.js merchant console
-│   │   ├── app/
+├── client/                        # React + Vite merchant console
+│   ├── src/
 │   │   ├── components/
-│   │   └── lib/api-client.ts
-│   ├── api/                       # Fastify REST/webhook service
-│   │   └── src/
-│   │       ├── modules/auth/
-│   │       ├── modules/cases/
-│   │       ├── modules/checkout/
-│   │       ├── modules/merchants/
-│   │       ├── modules/policies/
-│   │       ├── modules/webhooks/
-│   │       ├── plugins/
-│   │       └── server.ts
-│   └── worker/                    # queue processors and schedulers
-│       └── src/
-│           ├── consumers/
-│           ├── jobs/
-│           └── worker.ts
-├── packages/
-│   ├── domain/                    # case state machine, commands, events
-│   ├── policy/                    # pure deterministic rule evaluator
-│   ├── schemas/                   # Zod schemas + OpenAPI types
-│   ├── db/                        # Prisma/Drizzle schema + migrations
-│   ├── integrations/              # Razorpay, messaging, CRM interfaces
-│   ├── ai/                        # structured-output prompts and validators
-│   ├── observability/             # tracing/logging/redaction utilities
-│   └── test-fixtures/             # signed webhook and batch fixtures
-├── infra/
-│   ├── docker/
-│   ├── terraform/                 # optional production deployment
-│   └── monitoring/
+│   │   ├── pages/
+│   │   ├── hooks/
+│   │   ├── services/
+│   │   └── App.jsx
+│   └── package.json
+├── server/                        # Node.js + Express API and worker
+│   ├── src/
+│   │   ├── config/
+│   │   ├── middleware/
+│   │   ├── modules/
+│   │   │   ├── auth/
+│   │   │   ├── cases/
+│   │   │   ├── checkout/
+│   │   │   ├── merchants/
+│   │   │   ├── policies/
+│   │   │   ├── webhooks/
+│   │   │   ├── recovery/
+│   │   │   └── metrics/
+│   │   ├── models/
+│   │   ├── integrations/
+│   │   │   ├── razorpay/
+│   │   │   ├── messaging/
+│   │   │   └── llm/
+│   │   ├── jobs/
+│   │   ├── policy/
+│   │   ├── audit/
+│   │   └── server.js
+│   └── package.json
+├── ml/                            # Python ML/scoring
+│   ├── data/
+│   ├── models/
+│   ├── scripts/
+│   ├── src/
+│   │   ├── features.py
+│   │   ├── risk_model.py
+│   │   └── batch_metrics.py
+│   └── requirements.txt
 ├── scripts/
-│   ├── seed-demo-batch.ts
-│   ├── replay-webhook.ts
-│   └── verify-audit-chain.ts
+│   ├── seed-demo-batch.js
+│   ├── replay-webhook.js
+│   └── verify-audit-chain.js
 └── docs/
     ├── api.md
     ├── demo-runbook.md
@@ -596,27 +624,28 @@ RazCodePay/
 
 ### 13.1 Module boundaries
 
-- `packages/domain` owns state transitions and does not import Fastify, database, Razorpay, or model SDKs.
-- `packages/policy` is a pure function: `evaluate(policy, caseSnapshot, now) -> allowedActions`. It is unit-testable with no network/database.
-- `packages/integrations` defines ports (`PaymentProvider`, `MessageProvider`, `CrmProvider`) and adapters. Tests use fakes.
-- `packages/ai` accepts an allow-listed decision context and returns validated `DecisionRecommendation`; it cannot import an integration adapter.
-- `apps/worker` orchestrates ports, persistence, retries, schedules, and idempotency.
-- `apps/api` handles transport/auth only and invokes domain commands; no recovery logic should live solely in route handlers.
+- `client` owns presentation only; it cannot decide monetary success or bypass server policy.
+- `server/src/modules` owns API/domain orchestration and tenant authorization.
+- `server/src/policy` is a pure deterministic evaluator: `evaluate(policy, caseSnapshot, now) -> allowedActions`.
+- `server/src/integrations` defines ports/adapters for Razorpay, messaging, and the LLM provider. Tests use fakes.
+- `server/src/jobs` orchestrates schedules, retries, idempotency and reconciliation.
+- `ml/src` owns feature engineering and Scikit-learn scoring. It cannot import payment or messaging adapters.
+- The AI layer accepts an allow-listed decision context and returns validated `DecisionRecommendation`; it cannot invoke an integration directly.
 
 ## 14. Implementation plan
 
 ### Phase 0 — Foundation (day 1)
 
-- Initialise the workspace, linting, formatting, strict TypeScript, test runner, Docker Compose, `.env.example`, and CI.
-- Create PostgreSQL schema/migrations for merchants, raw events, outbox, cases, attempts, audit log, and attribution.
+- Initialise React/Vite client, Express API, Node worker, MongoDB connection, Python ML environment, `.env.example`, formatting, and basic CI.
+- Create MongoDB collections/indexes for merchants, raw events, durable jobs, cases, attempts, audit log, and attribution.
 - Implement structured logs with `trace_id`, `merchant_id`, `case_id`, and redaction. Add health/readiness endpoints.
-- Define the canonical event Zod schema, action catalogue, state-transition table, error taxonomy, and policy JSON schema before building UI.
+- Define the canonical event schema, action catalogue, state-transition table, error taxonomy, and policy JSON schema before building UI.
 
-**Done when:** a local stack starts with one command; a migration applies to empty PostgreSQL; a state-machine unit test rejects invalid transitions.
+**Done when:** a local stack starts with one command; MongoDB indexes initialise; a state-machine unit test rejects invalid transitions.
 
 ### Phase 1 — Trusted event spine (days 2–3)
 
-- Build raw-body Razorpay webhook endpoint, signature verifier, dedupe key, `incoming_events`, transactional outbox, and outbox publisher.
+- Build raw-body Razorpay webhook endpoint, signature verifier, dedupe key, `incoming_events`, durable job records, and worker retry loop.
 - Implement normalisation for the selected payment/subscription/invoice event fixtures.
 - Add entity upsert/correlation and idempotent case creation for failed subscriptions and overdue invoices.
 - Build webhook replay CLI and fixtures covering valid, invalid, duplicate, delayed, and out-of-order events.
@@ -632,13 +661,14 @@ RazCodePay/
 
 **Done when:** a test case receives at most one permitted message; an opt-out/success before the timer causes zero messages; a verified success records exactly one recovered amount.
 
-### Phase 3 — AI recommendation and explanation (day 6)
+### Phase 3 — AI recommendation and ML score (day 6)
 
-- Construct a minimal redacted decision context and strict structured-output prompt.
+- Build the minimal redacted feature vector with Pandas/NumPy and a Scikit-learn baseline such as logistic regression or a tree-based classifier for recoverability ranking.
+- Construct a minimal structured-output LLM prompt and validate its response server-side.
 - Apply pre- and post-policy validation, timeout/circuit-breaker, deterministic fallback, prompt/version metadata, and merchant explanation panel.
 - Add adversarial tests: model returns unknown action, prohibited channel, malformed JSON, unrealistic time, or injection-shaped customer content.
 
-**Done when:** each malicious/invalid model response fails closed; valid output can never exceed policy permissions; the explanation lists factual policy reasons.
+**Done when:** each malicious/invalid model response fails closed; risk score changes ranking but never expands permissions; the AI output can never exceed policy permissions.
 
 ### Phase 4 — Merchant experience and demo evidence (days 7–8)
 
@@ -651,7 +681,7 @@ RazCodePay/
 
 ### Phase 5 — Production hardening (after buildathon)
 
-- Replace local secrets with managed KMS/secret manager; add database backups, retention, SLOs, alerting, tracing, runbooks, and load tests.
+- Replace local secrets with managed KMS/secret manager; add MongoDB backups, retention, SLOs, alerting, tracing, runbooks, and load tests.
 - Add a provider retry reconciliation service and webhook replay/reprocessing UI with strict permissions.
 - Conduct privacy/security review, consent/template review, tenant isolation tests, and live-mode approval process.
 - Introduce a warehouse/BI pipeline only after core transactional correctness and attribution are proven.
@@ -662,7 +692,7 @@ RazCodePay/
 | --- | --- | --- |
 | Unit | Pure domain/policy/attribution functions. | Terminal state cannot reopen; opted-out customer has no allowed channel; recovered payment cannot be counted twice. |
 | Contract | Provider payload mapping and adapter request/response shapes. | Razorpay test webhook fixture verifies and normalises; invoice state mapping. |
-| Integration | PostgreSQL outbox, queue retries, locks, migrations. | Duplicate delivery; worker crash between DB commit/provider call; out-of-order success/failure. |
+| Integration | MongoDB jobs, retries, unique indexes, atomic updates. | Duplicate delivery; worker crash between DB commit/provider call; out-of-order success/failure. |
 | End-to-end | Synthetic batch through API/worker/UI. | 50+ cases, one recovery, one opt-out, one expired invoice, one unknown message send. |
 | Security | Signature, auth/RBAC, tenant isolation, redaction, injection. | Cross-tenant case ID blocked; prompt sees no payment secret; tampered signature rejected. |
 | Load/resilience | Webhook burst, provider outages, scheduled-job concurrency. | Fast acknowledgement under burst; no duplicate messages after retry. |
@@ -682,19 +712,19 @@ Key invariants to encode as tests:
 
 ### 16.1 Operational dashboards
 
-- **Ingress:** webhook verification failures, duplicate rate, acknowledgement latency, outbox backlog, dead-letter count.
-- **Workflow:** open cases by type/state, scheduled attempts, policy denials by reason, provider send success/unknown/error, queue lag.
+- **Ingress:** webhook verification failures, duplicate rate, acknowledgement latency, durable-job backlog, dead-letter count.
+- **Workflow:** open cases by type/state, scheduled attempts, policy denials by reason, provider send success/unknown/error, worker lag.
 - **Value:** at-risk amount, verified gross recovered, recovery rate, time-to-recovery, contact/stop rates, attribution confidence.
 - **Safety:** contacts near/over cap (should be zero), sends after success (must be zero), opt-out processing latency, cross-tenant access denials.
 
 ### 16.2 Alert conditions
 
-Alert an operator—not a customer—when webhook signature failures spike, queue lag crosses the action grace threshold, a provider has sustained unknown results, outbox rows age beyond target, a policy evaluator fails, or the invariant checker detects any attempted action after terminal state. Automatically pause the affected merchant/channel on repeated policy/executor safety violations.
+Alert an operator—not a customer—when webhook signature failures spike, worker lag crosses the action grace threshold, a provider has sustained unknown results, durable jobs age beyond target, the policy evaluator fails, or the invariant checker detects any attempted action after terminal state. Automatically pause the affected merchant/channel on repeated policy/executor safety violations.
 
 ### 16.3 Recovery/replay runbook
 
 1. Pause new outbound attempts for the affected merchant/channel.
-2. Identify the persisted incoming event/outbox rows using trace ID and event time; do not ask Razorpay to resend blindly.
+2. Identify the persisted incoming event/job rows using trace ID and event time; do not ask Razorpay to resend blindly.
 3. Fix the normaliser/adapter/policy issue and add a regression fixture.
 4. Reprocess from immutable event data with a new processing run ID. The idempotency key prevents resending completed effects.
 5. Reconcile unknown provider outcomes before scheduling new attempts.
@@ -705,10 +735,12 @@ Alert an operator—not a customer—when webhook signature failures spike, queu
 | Decision | Why | Trade-off |
 | --- | --- | --- |
 | Narrow MVP: subscription + invoices | Enables one convincing closed loop and meaningful batch metrics. | Does not initially cover all revenue leakage sources. |
-| Webhook + outbox over polling | Near-real-time, durable, event-driven processing. | Requires signature, dedupe, ordering, and replay discipline. |
-| Postgres as transactional core | Strong consistency for policies, cases, audit, and attribution. | Analytics at large scale will later need a warehouse. |
+| Webhook + durable MongoDB jobs over polling-only | Near-real-time, durable, event-driven processing without another required queue product. | Worker scheduling logic is simpler than a dedicated distributed queue but needs careful retry/locking design. |
+| MongoDB as transactional core | Matches the team's MERN skills and works well for event-shaped records, case documents, and audit data in the MVP. | Complex analytics/relational joins may later benefit from a warehouse or relational projection. |
 | Rules gate AI | Creates deterministic financial/compliance boundaries. | Less “autonomous” appearance; intentionally so. |
 | Templates over generative outreach | Prevents unsafe/unapproved customer language. | Less message personalisation in MVP. |
+| Python/Scikit-learn for scoring | Uses the team's ML strengths while keeping the main service simple. | Adds one runtime boundary to the stack. |
+| React + Express over heavier full-stack frameworks | Familiar, easy to demo, direct control of APIs and UI. | More boilerplate than an all-in-one framework. |
 | Human approval for high impact | Adds merchant control and auditability. | Can slow recovery; apply only above clearly stated thresholds. |
 | Synthetic batch for demo | Reproducible and safe with test keys. | Cannot claim real-world lift; label results honestly. |
 
