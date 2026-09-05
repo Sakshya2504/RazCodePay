@@ -19,7 +19,6 @@ export function startRecoveryWorker() {
 
     try {
       const dueCases = await RecoveryCase.find({
-        merchantId: 'demo-merchant',
         state: { $in: ['awaiting_window', 'planned'] },
         nextActionAt: { $lte: new Date() },
       })
