@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { IncomingEvent } from '../models/IncomingEvent.js';
 import { config } from '../config.js';
 import { processVerifiedEvent, createPayloadHash } from '../services/recovery.js';
 import { writeAudit } from '../services/audit.js';
@@ -29,7 +30,6 @@ export function registerWebhookRoutes(app) {
         details: { payloadSha256 },
         actorType: 'razorpay',
       }).catch(() => undefined);
-
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
@@ -42,14 +42,23 @@ export function registerWebhookRoutes(app) {
 
     const eventType = payload.event;
     const providerEventId = payload.id || payload.event_id || null;
-    if (!eventType) {
-      return res.status(400).json({ error: 'Webhook event type is required' });
-    }
+    if (!eventType) return res.status(400).json({ error: 'Webhook event type is required' });
 
-    // Razorpay can retry webhook delivery. The unique dedupe key makes replay safe.
     const dedupeKey = providerEventId
       ? `razorpay:${merchantId}:${providerEventId}`
       : `razorpay:${merchantId}:${eventType}:${payloadSha256}`;
+
+    // A duplicate delivery is a normal provider behaviour, not a server error.
+    const existing = await IncomingEvent.findOne({ merchantId, dedupeKey }).select('_id').lean();
+    if (existing) {
+      await writeAudit({
+        merchantId,
+        eventName: 'webhook_duplicate_ignored',
+        details: { dedupeKey, eventType },
+        actorType: 'razorpay',
+      }).catch(() => undefined);
+      return res.status(200).json({ received: true, duplicate: true, eventId: existing._id });
+    }
 
     try {
       const result = await processVerifiedEvent({
@@ -61,14 +70,13 @@ export function registerWebhookRoutes(app) {
         payloadSha256,
       });
 
-      return res.status(result.event ? 200 : 202).json({
+      return res.status(200).json({
         received: true,
         eventId: result.event._id,
         caseId: result.case?._id || null,
         recovered: result.recovered || false,
       });
     } catch (error) {
-      // Returning 5xx allows the provider to retry transient database failures.
       console.error('Webhook processing failed:', error.message);
       return res.status(500).json({ error: 'Webhook could not be persisted' });
     }
