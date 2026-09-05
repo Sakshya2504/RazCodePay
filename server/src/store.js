@@ -4,8 +4,7 @@ const merchants = new Map();
 const events = new Map();
 const audits = [];
 const terminalStates = new Set(['recovered', 'stopped', 'expired']);
-
-function clone(value) { return structuredClone(value); }
+const clone = (value) => structuredClone(value);
 
 function makeCase(index, overrides = {}) {
   const types = ['failed_subscription', 'invoice_overdue', 'checkout_abandonment'];
@@ -16,15 +15,10 @@ function makeCase(index, overrides = {}) {
   const now = Date.now();
   const state = index === 0 || index === 3 ? 'recovered' : index === 6 ? 'stopped' : 'planned';
   return {
-    id: `case-${String(index + 1).padStart(3, '0')}-${randomUUID().slice(0, 6)}`,
-    caseKey: `demo:${index}`,
-    merchantId: 'demo-merchant',
-    type: types[index % types.length], state,
+    id: `case-${String(index + 1).padStart(3, '0')}-${randomUUID().slice(0, 6)}`, caseKey: `demo:${index}`, merchantId: 'demo-merchant', type: types[index % types.length], state,
     amountMinor: amounts[index], currency: 'INR', customerId: `cust_demo_${String(index + 1).padStart(3, '0')}`,
-    providerEntityId: `pay_demo_${String(index + 1).padStart(3, '0')}`,
-    providerOrderId: `order_demo_${String(index + 1).padStart(3, '0')}`,
-    failureCode: failures[index % failures.length],
-    failureDescription: index % 2 === 0 ? 'Payment attempt failed; a customer recovery path is still available.' : 'Customer action is required before payment can complete.',
+    providerEntityId: `pay_demo_${String(index + 1).padStart(3, '0')}`, providerOrderId: `order_demo_${String(index + 1).padStart(3, '0')}`,
+    failureCode: failures[index % failures.length], failureDescription: index % 2 === 0 ? 'Payment attempt failed; a customer recovery path is still available.' : 'Customer action is required before payment can complete.',
     consent: { email: true, sms: false, whatsapp: false }, attemptCount: index === 0 ? 1 : 0,
     attempts: index === 0 ? [{ action: 'send_payment_reminder', channel: 'email', status: 'sent_test_mode', providerReference: 'demo-message-recovered' }] : [],
     riskScore: risk[index], recoverabilityScore: recoverability[index],
@@ -37,42 +31,28 @@ function makeCase(index, overrides = {}) {
 }
 
 function ensureMerchant(merchantId) {
-  if (!merchants.has(merchantId)) merchants.set(merchantId, Array.from({ length: 8 }, (_, index) => makeCase(index)));
+  if (!merchants.has(merchantId)) merchants.set(merchantId, merchantId === 'demo-merchant' ? Array.from({ length: 8 }, (_, index) => makeCase(index)) : []);
   return merchants.get(merchantId);
 }
-
-export function addCase(merchantId, item) {
-  ensureMerchant(merchantId).push(clone(item));
-  return clone(item);
-}
-
-export function listCases(merchantId = 'demo-merchant') {
-  return clone([...ensureMerchant(merchantId)].sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt)));
-}
+export function addCase(merchantId, item) { ensureMerchant(merchantId).push(clone(item)); return clone(item); }
+export function listCases(merchantId = 'demo-merchant') { return clone([...ensureMerchant(merchantId)].sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt))); }
 export function getCase(merchantId, caseId) { return clone(ensureMerchant(merchantId).find((item) => item.id === caseId) || null); }
-export function updateCase(merchantId, caseId, patch) {
-  const target = ensureMerchant(merchantId).find((item) => item.id === caseId);
-  if (!target) return null;
-  Object.assign(target, clone(patch), { updatedAt: new Date().toISOString() });
-  return clone(target);
-}
+export function updateCase(merchantId, caseId, patch) { const target = ensureMerchant(merchantId).find((item) => item.id === caseId); if (!target) return null; Object.assign(target, clone(patch), { updatedAt: new Date().toISOString() }); return clone(target); }
 export function resetDemo(merchantId = 'demo-merchant') {
   merchants.set(merchantId, Array.from({ length: 60 }, (_, index) => makeCase(index % 8, {
     id: `demo-${String(index + 1).padStart(3, '0')}`, caseKey: `demo-batch:${index}`,
-    state: index % 10 === 0 ? 'recovered' : index % 17 === 0 ? 'stopped' : 'planned',
-    amountMinor: [9900, 24900, 49900, 99900, 149900, 249900, 499900, 799900][index % 8],
+    state: index % 10 === 0 ? 'recovered' : index % 17 === 0 ? 'stopped' : 'planned', amountMinor: [9900, 24900, 49900, 99900, 149900, 249900, 499900, 799900][index % 8],
     riskScore: Number((0.35 + ((index * 13) % 60) / 100).toFixed(2)), recoverabilityScore: Number((0.45 + ((index * 17) % 50) / 100).toFixed(2)),
-    recoveredAmountMinor: index % 10 === 0 ? [9900, 24900, 49900][index % 3] : 0,
-    closedAt: index % 10 === 0 || index % 17 === 0 ? new Date().toISOString() : null,
+    recoveredAmountMinor: index % 10 === 0 ? [9900, 24900, 49900][index % 3] : 0, closedAt: index % 10 === 0 || index % 17 === 0 ? new Date().toISOString() : null,
   })));
   return listCases(merchantId);
 }
 export function summarize(merchantId = 'demo-merchant') {
-  const cases = ensureMerchant(merchantId), recovered = cases.filter((item) => item.state === 'recovered');
-  const active = cases.filter((item) => !terminalStates.has(item.state));
+  const cases = ensureMerchant(merchantId), recovered = cases.filter((item) => item.state === 'recovered'), active = cases.filter((item) => !terminalStates.has(item.state));
   return { totalCases: cases.length, activeCases: active.length, recoveredCases: recovered.length, stoppedCases: cases.filter((item) => item.state === 'stopped').length, expiredCases: cases.filter((item) => item.state === 'expired').length, revenueAtRiskMinor: active.reduce((sum, item) => sum + item.amountMinor, 0), recoveredRevenueMinor: cases.reduce((sum, item) => sum + (item.recoveredAmountMinor || 0), 0), recoveryRate: cases.length ? recovered.length / cases.length : 0, attempts: cases.reduce((sum, item) => sum + (item.attemptCount || 0), 0), estimatedHoursSaved: Math.round(cases.length * 0.35 * 10) / 10 };
 }
 export function recordEvent(key, value) { if (events.has(key)) return false; events.set(key, clone(value)); return true; }
 export function hasEvent(key) { return events.has(key); }
 export function addAudit(entry) { audits.push({ id: randomUUID(), createdAt: new Date().toISOString(), ...clone(entry) }); }
 export function listAudits(merchantId = 'demo-merchant') { return clone(audits.filter((item) => item.merchantId === merchantId).slice(-100).reverse()); }
+export function resetStore() { merchants.clear(); events.clear(); audits.length = 0; }
