@@ -1,11 +1,12 @@
 services:
   mongodb:
     image: mongo:8
+    container_name: razcodepay-mongodb
     restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
-      - razcodepay_mongo:/data/db
+      - razcodepay_mongodb:/data/db
 
 volumes:
-  razcodepay_mongo:
+  razcodepay_mongodb:
