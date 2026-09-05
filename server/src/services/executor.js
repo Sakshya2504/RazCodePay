@@ -16,7 +16,9 @@ export async function executeRecoveryAttempt(caseId, merchantId = 'demo-merchant
     throw new Error(`Case is terminal: ${recoveryCase.state}`);
   }
 
-  const policy = evaluatePolicy(recoveryCase, new Date(9999, 0, 1));
+  // Re-read the policy at the moment of the side effect. A scheduled decision
+  // is a plan, not permission to bypass a rule that changed afterward.
+  const policy = evaluatePolicy(recoveryCase, new Date());
   if (!policy.allowedActions.includes('send_payment_reminder')) {
     throw new Error(`Policy denied contact: ${policy.reasons.join(', ') || 'no eligible action'}`);
   }
