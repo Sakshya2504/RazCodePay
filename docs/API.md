@@ -1,20 +1,28 @@
-# API reference
+# API Reference
 
-Base URL: `http://127.0.0.1:3000/api`
+Base URL (local):
+
+```text
+http://127.0.0.1:3000/api
+```
 
 ## Authentication
 
-Production mode (`DEMO_MODE=false`) uses a Bearer access token issued by the auth endpoints.
+Production-oriented mode (`DEMO_MODE=false`) uses a Bearer access token:
 
-```text
+```http
 Authorization: Bearer <access-token>
 ```
 
-Demo mode bypasses authentication and uses the synthetic `demo-merchant` workspace.
+The frontend stores the session token locally and attaches it to API requests. Merchant identity and role are enforced server-side.
 
-## Auth
+Demo mode uses the synthetic `demo-merchant` workspace and does not require authentication.
 
-`POST /auth/register`
+## Authentication endpoints
+
+### `POST /auth/register`
+
+Create a merchant workspace and owner account.
 
 ```json
 {
@@ -25,55 +33,71 @@ Demo mode bypasses authentication and uses the synthetic `demo-merchant` workspa
 }
 ```
 
-Creates a MongoDB-backed merchant workspace and owner account.
+### `POST /auth/login`
 
-`POST /auth/login`
+Authenticate an existing merchant user. Returns an access token and authenticated user context.
 
-Returns a one-hour access token.
+### `GET /auth/me`
 
-`GET /auth/me`
+Return the authenticated user/merchant identity and role context.
 
-Returns the authenticated identity and merchant claims.
+## Dashboard and recovery cases
 
-## Dashboard and cases
+### `GET /dashboard`
 
-`GET /dashboard` returns summary KPIs, visible recovery cases and the active policy.
+Returns merchant-scoped recovery KPIs, visible cases and current policy information.
 
-`GET /cases`
+### `GET /cases`
 
-`GET /cases/:id`
+List merchant-scoped recovery cases.
 
-`POST /cases/:id/evaluate`
+### `GET /cases/:id`
 
-Runs policy evaluation, the local recovery model and optional LLM reasoning. The LLM only receives actions already approved by policy.
+Return one recovery case.
 
-`POST /cases/:id/execute`
+### `POST /cases/:id/evaluate`
 
-Re-checks policy and executes the recommended action. In demo mode a synthetic transport is recorded. In production, `create_payment_link` uses the merchant's verified Razorpay connection.
+Runs the policy-aware AI evaluation for a case. The response can contain recovery score, risk score, expected recovery value, confidence, uncertainty, model version, reason signals and the bounded recommendation.
 
-`POST /cases/:id/stop`
+### `POST /cases/:id/execute`
 
-Stops future automation. Operator-facing mutations require an owner, admin or operator role.
+Re-loads the latest case, re-checks policy and attempts the recommended action when eligible. In production-oriented mode, Payment Link creation uses the verified merchant Razorpay connection.
 
-`POST /cases/:id/simulate-success`
+### `POST /cases/:id/stop`
 
-Demo-only. Injects a synthetic `payment.captured` event so judges can see a case transition to `recovered` without touching real money. This endpoint returns `403` in production mode.
+Stops future automation for a recovery case. Operator-facing mutations are role protected.
 
-## Demo
+### `POST /cases/:id/simulate-success`
 
-`POST /demo/reset`
+**Demo-only.** Injects a synthetic provider-success path to demonstrate the `recovered` state transition without moving real money. Returns `403` in production-oriented mode.
 
-Demo-only. Creates a reproducible 60-case synthetic cohort. This endpoint returns `403` in production mode so synthetic data cannot accidentally be created in a live merchant workspace.
+## Policy and audit
+
+### `GET /policy`
+
+Return the merchant's current recovery guardrails.
+
+### `PUT /policy`
+
+Update merchant recovery controls. Typical controls include recovery window, quiet hours, attempt limit, automatic-contact cap, human-approval threshold and communication channels.
+
+### `GET /audit`
+
+Return the merchant-scoped audit trail.
+
+### `GET /merchant`
+
+Return merchant profile/configuration data available to the authenticated user.
 
 ## Razorpay integration
 
-`GET /integrations/razorpay`
+### `GET /integrations/razorpay`
 
-Returns merchant connection status without exposing secrets.
+Return connection status without exposing provider secrets.
 
-`POST /integrations/razorpay`
+### `POST /integrations/razorpay`
 
-Owner/admin only. Example:
+Connect a merchant-controlled Razorpay account.
 
 ```json
 {
@@ -84,41 +108,75 @@ Owner/admin only. Example:
 }
 ```
 
-The backend verifies the credentials against Razorpay before storing the encrypted secrets in MongoDB.
+The backend verifies the supplied credentials before persisting the encrypted connection.
 
-`DELETE /integrations/razorpay`
+### `DELETE /integrations/razorpay`
 
-Revokes the stored provider connection.
+Revoke the stored Razorpay connection.
 
-## Policy and audit
+### `GET /integrations/razorpay/oauth/start`
+### `GET /integrations/razorpay/oauth/callback`
 
-`GET /policy`
+OAuth integration endpoints for a Technology Partner-style deployment.
 
-`GET /audit`
+## Webhooks
 
-`GET /merchant`
+### `POST /webhooks/razorpay/:merchantId`
 
-## Health
+Merchant-specific provider webhook endpoint.
 
-`GET /health`
+Expected headers:
 
-## Razorpay webhook
-
-Production endpoint:
-
-```text
-POST /webhooks/razorpay/<merchant-mongodb-id>
-```
-
-Headers:
-
-```text
-X-Razorpay-Signature: <hmac-sha256-of-raw-body>
+```http
+X-Razorpay-Signature: <hmac-sha256>
 x-razorpay-event-id: <unique-provider-event-id>
 ```
 
-The webhook handler verifies the signature before parsing JSON, persists the event, deduplicates repeated deliveries, updates processing status, and feeds only verified events into the recovery engine.
+The handler validates the signature against the raw request body, de-duplicates repeated deliveries, persists webhook processing state, and passes only verified events into the recovery workflow.
 
-Razorpay documents HMAC-SHA256 validation over the raw webhook body and recommends the unique event header for duplicate-event handling. citeturn540502search2turn540502search0
+Typical event roles in the implementation:
 
-The recovery engine currently uses failure signals such as `payment.failed` and success signals such as `payment.captured` or `order.paid`. citeturn540502search1
+```text
+payment.failed  → recovery opportunity
+payment.captured / order.paid → recovery verification
+```
+
+## Phase 2 / operations
+
+### `GET /phase2/queue`
+
+Return background queue health.
+
+### `GET /phase2/experiments`
+### `POST /phase2/experiments`
+### `POST /phase2/experiments/:id/start`
+### `POST /phase2/experiments/:id/stop`
+### `GET /phase2/experiments/metrics`
+
+Manage and inspect recovery experiments and outcome metrics.
+
+### `GET /phase2/cases/:caseId/communications`
+
+Return communication history for a recovery case.
+
+## Demo endpoints
+
+### `POST /demo/reset`
+
+**Demo-only.** Reset/load the reproducible synthetic cohort. Blocked in production-oriented mode.
+
+## Health
+
+### `GET /health`
+
+Return service/deployment mode and basic health information.
+
+## Security invariants
+
+The important server-side invariants are:
+
+```text
+Authentication → merchant scoping → policy → AI decision → policy re-check → side effect → provider verification
+```
+
+No frontend control is treated as an authorization boundary. Provider secrets are never returned by the integration status endpoint. Demo-only mutation endpoints are unavailable in production-oriented mode.
