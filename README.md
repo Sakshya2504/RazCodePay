@@ -7,6 +7,8 @@ RazCodePay is a merchant-facing recovery platform that detects payment failures,
 ## What is production-ready in this repository
 
 - **MongoDB is the application system of record** in `DEMO_MODE=false`.
+- **Redis/BullMQ is used only for background jobs**; it is not the application database.
+- **No Docker dependency** is required for local development. Run MongoDB and Redis as native Windows services.
 - **Merchant authentication** with bcrypt password hashing, JWT access tokens and owner/admin/operator/viewer roles.
 - **Encrypted provider credentials** using AES-256-GCM before storage in MongoDB.
 - **Real Razorpay adapter** using Basic Auth for merchant API keys and real Payment Link creation.
@@ -38,7 +40,7 @@ Recovery Case ◄────────────── Audit Event Store
    ▼
 Action Executor
    │
-   ├── Test-mode transport
+   ├── Email / Payment Link
    └── Real Razorpay Payment Link
    │
    ▼
@@ -51,17 +53,31 @@ Verified Razorpay success event
 Recovered case + attributed amount
 ```
 
-## Local demo
+## Local development without Docker
 
-### Terminal 1 — MongoDB
+Install **MongoDB Community Server** and **Redis-compatible Redis service** such as Memurai on Windows, then make sure both services are running.
 
-```bash
-docker compose up -d mongodb
+### Verify MongoDB
+
+```powershell
+mongosh
 ```
 
-MongoDB runs on `127.0.0.1:27017`.
+MongoDB should be reachable at `127.0.0.1:27017`.
 
-### Terminal 2 — API
+### Verify Redis
+
+```powershell
+redis-cli ping
+```
+
+Expected response:
+
+```text
+PONG
+```
+
+### Terminal 1 — API
 
 ```powershell
 cd server
@@ -74,7 +90,16 @@ API: `http://127.0.0.1:3000`
 
 Health: `http://127.0.0.1:3000/api/health`
 
-The default `.env.example` keeps `DEMO_MODE=true`, so MongoDB is optional for the demo.
+The default `.env.example` keeps `DEMO_MODE=true`, so MongoDB and Redis are optional for the demo UI.
+
+### Terminal 2 — background worker
+
+```powershell
+cd server
+npm run worker
+```
+
+The worker consumes Redis/BullMQ jobs when `DEMO_MODE=false`.
 
 ### Terminal 3 — React console
 
@@ -93,6 +118,7 @@ Set these values in `server/.env`:
 ```env
 DEMO_MODE=false
 MONGODB_URI=mongodb://127.0.0.1:27017/razcodepay
+REDIS_URL=redis://127.0.0.1:6379
 JWT_SECRET=<long-random-secret>
 ENCRYPTION_KEY=<long-random-secret>
 ALLOWED_ORIGIN=https://your-console.example.com
@@ -103,26 +129,7 @@ Create an account through the production console. The backend creates a merchant
 
 ### Connect Razorpay
 
-The production connection endpoint is:
-
-```text
-POST /api/integrations/razorpay
-```
-
-Body:
-
-```json
-{
-  "keyId": "rzp_test_...",
-  "keySecret": "...",
-  "webhookSecret": "...",
-  "mode": "test"
-}
-```
-
-RazCodePay verifies the credentials against Razorpay before confirming the connection, then stores the API secret and webhook secret encrypted in MongoDB. Razorpay's APIs use Basic Auth with the Key ID and Key Secret. citeturn365918search0
-
-For a multi-merchant Technology Partner product, implement Razorpay OAuth rather than asking businesses to share their API secret. Razorpay documents OAuth as the partner access mechanism for this scenario. citeturn365918search2turn365918search5
+Use the production Razorpay connection controls in the merchant console. Razorpay OAuth is preferred for a multi-merchant Technology Partner integration; direct API-key connection remains available as a fallback.
 
 ### Webhook
 
@@ -144,8 +151,6 @@ Recommended deduplication header:
 x-razorpay-event-id: <unique-event-id>
 ```
 
-Razorpay documents HMAC-SHA256 validation over the raw webhook body and the unique event identifier for duplicate handling. citeturn365918search0
-
 ## AI system
 
 Every case is scored on failure profile, event freshness, customer intent, contact consent, amount exposure and prior-attempt pressure. The local model outputs risk, recoverability and feature signals. The optional LLM receives only the already-approved action set.
@@ -163,7 +168,7 @@ See [`docs/AI.md`](./docs/AI.md).
 
 ## Real recovery action
 
-The production executor can create a real Razorpay Payment Link for an eligible case. Razorpay documents Payment Links as URLs that can be used to collect payment and provides APIs for creating and managing them. citeturn365918search8turn365918search15
+The production executor can create a real Razorpay Payment Link for an eligible case and can send a real recovery email when SMTP is configured.
 
 The action is idempotency-keyed and still does not mark money as recovered. A later verified success event is required.
 
@@ -183,9 +188,19 @@ The action is idempotency-keyed and still does not mark money as recovered. A la
 | `POST /api/demo/reset` | Reset synthetic cohort |
 | `GET /api/audit` | Audit trail |
 | `GET /api/policy` | Current guardrails |
+| `PUT /api/policy` | Update merchant guardrails |
 | `GET /api/integrations/razorpay` | Razorpay connection status |
 | `POST /api/integrations/razorpay` | Connect and verify Razorpay |
 | `DELETE /api/integrations/razorpay` | Revoke stored connection |
+| `GET /api/integrations/razorpay/oauth/start` | Start Razorpay OAuth |
+| `GET /api/integrations/razorpay/oauth/callback` | Complete Razorpay OAuth |
+| `GET /api/phase2/experiments` | List experiments and active treatment |
+| `POST /api/phase2/experiments` | Create recovery experiment |
+| `POST /api/phase2/experiments/:id/start` | Start an experiment |
+| `POST /api/phase2/experiments/:id/stop` | Stop an experiment |
+| `GET /api/phase2/experiments/metrics` | Experiment outcome metrics |
+| `GET /api/phase2/cases/:caseId/communications` | Communication audit for a case |
+| `GET /api/phase2/queue` | Background queue health |
 | `POST /api/webhooks/razorpay/:merchantId` | Signed provider events |
 
 ## Repository structure
@@ -197,6 +212,7 @@ RazCodePay/
 │   ├── AI.md
 │   ├── API.md
 │   ├── DEMO_SCRIPT.md
+│   ├── PHASE2.md
 │   └── PRODUCTION.md
 ├── ml/
 ├── server/
@@ -214,4 +230,4 @@ RazCodePay/
 
 ## Production gap checklist
 
-The repository is now a real-world-oriented implementation rather than a purely synthetic dashboard, but a public SaaS launch still needs managed deployment, database backups, centralized logs/metrics, secret rotation, penetration testing, a real customer-messaging provider, and Razorpay Technology Partner/OAuth approval for a multi-merchant platform. 
+The repository is now a real-world-oriented implementation rather than a purely synthetic dashboard, but a public SaaS launch still needs managed deployment, database backups, centralized logs/metrics, secret rotation, penetration testing, a real customer-messaging provider, and Razorpay Technology Partner/OAuth approval for a multi-merchant platform.
