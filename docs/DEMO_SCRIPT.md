@@ -1,54 +1,53 @@
-# 3-minute demo script
+# 3-minute judge demo
 
 ## 0:00 — Problem
 
-“Failed payments create revenue leakage. Merchants do not just need another dashboard — they need the next safe action, ranked by recovery potential.”
+“Failed payments create revenue leakage. Merchants need the next safe recovery action, not another dashboard.”
 
-## 0:20 — Show the console
+## 0:20 — Open the product
 
 Open `http://127.0.0.1:5173`.
 
-Point to:
+Point to the four headline metrics: revenue at risk, recovered revenue, active cases and operator time saved.
 
-- revenue at risk
-- recovered revenue
-- active cases
-- operator time saved
+Say: “This is synthetic Test Mode data. The product mirrors the real event-to-recovery workflow without touching customer money.”
 
-Say: “Everything here is synthetic test data, but the workflow mirrors a real provider event → case → decision → execution → verified recovery loop.”
+## 0:55 — Show the AI
 
-## 0:55 — Show AI
+Open **AI decisions** and inspect a case.
 
-Open **AI decisions**.
+Say: “RazCodePay has an actual recovery scoring layer. It evaluates failure profile, freshness, customer intent, consent, amount exposure and prior attempts. The result is a recoverability score, risk score, signals, confidence and a ranked action.”
 
-Open one case.
+Then say: “An optional LLM can add natural-language reasoning, but it is only allowed to choose from the actions policy has already approved.”
 
-Say: “This is not a static chatbot. The local recovery model scores risk and recoverability from payment signals. An optional LLM can explain the choice, but it only receives actions the policy has already allowed.”
-
-## 1:35 — Show guardrails
+## 1:30 — Show the guardrails
 
 Open **Guardrails**.
 
-Highlight:
+Point out consent, quiet hours, attempt caps, automatic-contact limits and the human-review threshold.
 
-- consent
-- quiet hours
-- monetary thresholds
-- attempt caps
-- duplicate-event handling
+Say: “The model does not own these controls. The executor checks policy again at the moment of action.”
 
-Say: “AI cannot override these rules. The executor runs the same policy again immediately before contact.”
+## 1:55 — Execute safely
 
-## 2:05 — Show action
+Inspect a case where the recommendation is `send_payment_reminder`.
 
-For an allowed case, click **Run test-mode reminder**.
+Click **Run test-mode reminder**.
 
-Say: “The executor records an idempotent test-mode outbound attempt. It does not claim recovery.”
+Say: “This records an idempotent test-mode outbound attempt. It deliberately does not claim that money was recovered.”
 
-## 2:25 — Show provider truth
+## 2:15 — Prove the closed loop
 
-Explain that `payment.captured` or another configured paid event is the event that closes the case. Razorpay documents payment capture and order-paid events as successful payment signals. citeturn540502search1
+Click **Simulate verified Razorpay success**.
 
-## 2:45 — Close
+Say: “The simulator feeds the same recovery service with a synthetic `payment.captured` event. The case now moves to `recovered` and the recovered amount is updated.”
 
-“RazCodePay is selective because it optimizes for recovered money, not automation volume. AI proposes. Policy controls. Razorpay verifies.”
+For the real integration, explain that the same recovery service consumes a signed Razorpay webhook.
+
+## 2:40 — Provider truth
+
+Say: “Razorpay is the monetary source of truth. The webhook signature is validated against the raw request body, duplicate events are deduplicated, and provider success closes the case.” Razorpay documents HMAC-SHA256 webhook validation and the `x-razorpay-event-id` identifier for deduplication. citeturn540502search2turn540502search0
+
+## 2:55 — Closing line
+
+“RazCodePay is selective by design: AI proposes, deterministic policy controls, the executor acts, and Razorpay verifies.”
