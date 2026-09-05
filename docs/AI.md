@@ -1,10 +1,10 @@
 # AI and Decision Intelligence
 
-RazCodePay separates **prediction**, **reasoning**, and **authorization**.
+RazCodePay deliberately separates **prediction**, **reasoning**, and **authorization**.
 
 > **AI recommends. Policy controls. Executor acts. Razorpay verifies.**
 
-## 1. Decision pipeline
+## 1. End-to-end decision pipeline
 
 ```text
 Verified provider / case facts
@@ -12,44 +12,44 @@ Verified provider / case facts
 Feature construction
           ↓
 local-recovery-v2
-   ├─ risk score
-   ├─ recoverability score
-   ├─ expected recovery value
-   ├─ confidence / uncertainty
-   └─ feature signals
           ↓
-Policy-approved action set
+Risk + recoverability + expected recovery opportunity
           ↓
-Decision engine
-          ├─ local deterministic recommendation
-          └─ optional LLM reasoning
+Deterministic policy filter
+          ↓
+Bounded decision engine
+     ┌────┴────┐
+   local     optional LLM
+     └────┬────┘
           ↓
 Execution-time policy re-check
           ↓
-Provider / communication action
+Approved provider / communication action
           ↓
 Verified Razorpay outcome
 ```
 
-## 2. Local recovery model
+The model never receives authority to bypass policy or directly perform arbitrary payment operations.
 
-The implementation lives at `server/src/ai/riskModel.js` and is versioned as:
+## 2. `local-recovery-v2`
+
+Implementation:
 
 ```text
-local-recovery-v2
+server/src/ai/riskModel.js
 ```
 
-The model is intentionally deterministic and interpretable for the buildathon. It does **not** claim to be trained on proprietary production labels.
+The buildathon model is deterministic and interpretable. The repository does **not** claim that it was trained on proprietary production transaction labels.
 
-### Features
+### Signals/features
 
-The scorer derives signals from:
+The scorer derives signals from available case and provider context, including:
 
-- failure-code priors
-- recovery-type priors
-- event freshness / age
+- failure-code prior
+- recovery-type prior
+- event freshness
 - customer intent
-- contact reachability
+- customer contact reachability
 - communication consent
 - amount opportunity
 - provider-context completeness
@@ -57,7 +57,7 @@ The scorer derives signals from:
 
 ### Outputs
 
-Each evaluation can expose:
+A model evaluation can expose:
 
 ```text
 riskScore
@@ -71,11 +71,21 @@ features
 signals
 ```
 
-`expectedRecoveryMinor` is an estimated opportunity value used to prioritize cases. It is **not** the amount recovered and is never used to close a case.
+### Expected recovery opportunity
 
-## 3. Decision logic
+`expectedRecoveryMinor` estimates the opportunity value of a case for prioritization. It is not accounting revenue.
 
-The decision engine only considers actions that survive deterministic policy evaluation. The current action vocabulary is:
+```text
+expected recovery opportunity ≠ recovered revenue
+```
+
+A case is never marked `recovered` from a prediction alone.
+
+## 3. Decision engine
+
+The decision engine first receives an action set that has already been restricted by merchant policy.
+
+Current actions:
 
 ```text
 wait
@@ -86,75 +96,98 @@ create_human_task
 stop_case
 ```
 
-Decisioning considers recovery potential, transaction opportunity, failure context and safety boundaries. High-value, low-confidence or otherwise uncertain cases can be routed toward human review instead of forcing automation.
+Decisioning combines recovery potential, transaction opportunity, failure context, confidence and safety conditions.
 
-Failure evidence can also influence the recommendation toward a payment-method update when that is more appropriate than a generic reminder.
+Examples:
+
+- customer-action/authentication failures can favor `request_payment_method_update` when eligible
+- strong recovery potential can favor `create_payment_link`
+- recent recoverable signals with valid consent can favor `send_payment_reminder`
+- high-value, low-confidence or high-uncertainty cases can move to `create_human_task`
+- repeated low-value/low-probability cases can eventually favor `stop_case`
+
+The result is always checked against the supplied allowed action set.
 
 ## 4. Optional LLM reasoning
 
-LLM reasoning is optional. It is configured through:
+The LLM is optional and configured with:
 
 ```env
 AI_API_KEY=...
 AI_MODEL=gpt-4o-mini
 ```
 
-The LLM receives normalized case facts and the **already policy-approved action set**. It is explicitly constrained from inventing:
+The LLM receives normalized case facts plus the action set that policy has already approved.
 
-- arbitrary provider operations
-- discounts
+It is constrained from inventing:
+
+- provider operations
 - payment links
+- discounts
 - deadlines
 - customer facts
-- actions outside the approved set
+- disallowed actions
 
-The application validates the returned action. If the LLM is unavailable, times out, produces malformed output or proposes a disallowed action, the deterministic local path remains the safe fallback.
+The server validates the returned action. If the model is unavailable, produces malformed output, or proposes an action outside the safe set, the deterministic local decision remains the fallback.
 
 ## 5. Why the hybrid design
 
-A payment-recovery system needs more than a high score. It needs to explain why a case was prioritized and prevent a model from becoming an unrestricted operator.
+A payment-recovery system needs both predictive intelligence and hard operational boundaries.
 
-RazCodePay therefore separates responsibilities:
+| Layer | Responsibility | Authority |
+|---|---|---|
+| `local-recovery-v2` | Score recovery potential/risk | Advisory |
+| Decision engine | Select one bounded next action | Advisory |
+| Optional LLM | Add structured reasoning/explanation | Advisory |
+| Policy engine | Allow/block actions | Authoritative |
+| Executor | Perform approved side effects | Operational |
+| Razorpay | Confirm monetary outcome | External source of truth |
 
-| Layer | Responsibility |
-|---|---|
-| Local model | Predict recovery potential and risk |
-| Decision engine | Select a bounded next action |
-| LLM | Optional language-level reasoning/explanation |
-| Policy engine | Authorize or block actions |
-| Executor | Perform approved side effects |
-| Razorpay | Confirm monetary outcome |
+This separation makes the AI inspectable without turning it into an unrestricted payment operator.
 
-## 6. Guardrails around AI
+## 6. Policy boundaries around AI
 
-Policy is evaluated before planning and again immediately before execution.
+Policy can restrict:
 
-Relevant controls include:
-
-- communication consent
 - recovery window
 - grace period
 - quiet hours
 - maximum attempts
 - automatic-contact cap
-- human-approval threshold
+- human-review threshold
 - allowed channels
+- customer consent
 - terminal case state
 
-An AI recommendation therefore cannot bypass merchant controls.
+Policy is evaluated before decisioning and again immediately before execution.
 
-## 7. How to explain it to judges
+```text
+policy pre-filter
+      ↓
+AI decision
+      ↓
+policy re-check
+      ↓
+side effect
+```
 
-A good 20-second explanation is:
+## 7. What operators should see
 
-> “We use a deterministic, interpretable recovery model to estimate risk, recoverability and expected recovery value. An optional LLM can add reasoning, but it only sees actions already approved by deterministic merchant policy. The executor re-checks policy before acting, and we count recovery only after Razorpay verifies success.”
+The Decision Intelligence UI is intended to expose enough evidence to understand a recommendation:
 
-Then open **Decision Intelligence** and point to:
+- recommended action
+- model version
+- recoverability
+- risk
+- confidence
+- uncertainty
+- data quality
+- expected recovery opportunity
+- feature/reason signals
+- policy status
 
-1. recoverability
-2. risk
-3. expected recovery value
-4. confidence and uncertainty
-5. feature-level reason signals
-6. model version
-7. the Policy & Controls screen
+Missing model metadata should be represented as unavailable rather than silently converted into a misleading zero.
+
+## 8. How to explain the AI to judges
+
+> “We use a deterministic, interpretable recovery model to estimate risk, recoverability and expected recovery opportunity. Merchant policy defines what actions are allowed. An optional LLM can improve structured reasoning, but it cannot leave that action set. The executor re-checks policy before acting, and revenue is counted only after Razorpay verifies success.”
