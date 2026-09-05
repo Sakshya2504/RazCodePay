@@ -1,19 +1,22 @@
 {
   "name": "razcodepay-api",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": { "dev": "node --watch src/server.js", "start": "node src/server.js", "test": "node --test" },
+  "scripts": { "dev": "node --watch src/server.js", "start": "node src/server.js", "worker": "node src/worker.js", "test": "node --test" },
   "dependencies": {
     "bcryptjs": "^3.0.2",
+    "bullmq": "^5.63.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
+    "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
+    "nodemailer": "^7.0.6",
     "openai": "^5.12.2"
   }
 }
