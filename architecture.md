@@ -2,107 +2,83 @@
 
 **Razorpay AI Buildathon · Track 03**
 
-## 1. Product and system boundary
+## 1. System purpose
 
-RazCodePay is an AI-assisted revenue recovery control plane for merchants using Razorpay. It turns a failed payment event into an auditable decision and recovery workflow.
+RazCodePay is an AI-assisted revenue recovery control plane for merchants using Razorpay. A failed payment becomes a recovery case, an explainable decision, a policy-bounded action, and finally a provider-verified outcome.
 
-The core loop is:
+The system loop is:
 
 **detect → diagnose → predict → decide → policy-check → execute → verify**
 
-The authority boundary is intentionally strict:
+The trust boundary is intentionally strict:
 
-> **AI recommends. Deterministic policy controls. Executor acts. Razorpay verifies.**
+> **AI recommends. Policy controls. Executor acts. Razorpay verifies.**
 
-The implementation is provider-grounded: application state lives in MongoDB, background work is asynchronous through Redis/BullMQ, and recovered revenue is credited only from verified Razorpay success events.
+MongoDB stores durable application state. Redis/BullMQ provides asynchronous job infrastructure. Razorpay success events remain the monetary source of truth for recovered revenue.
 
 ## 2. High-level architecture
 
 ```mermaid
 flowchart LR
-    UI[React + Vite\nMerchant Console] --> AUTH[Auth + RBAC]
-    AUTH --> API[Node.js + Express API]
-    API --> DB[(MongoDB\nSystem of Record)]
-    API --> POLICY[Policy Engine]
-    API --> MODEL[local-recovery-v2]
-    MODEL --> DECISION[Decision Engine]
-    DECISION --> POLICY2[Execution-time Policy Re-check]
-    POLICY2 --> EXEC[Recovery Executor]
+    RP[Razorpay] -->|signed webhook| WH[Webhook Gateway]
+    WH --> VERIFY[Raw-body HMAC + Deduplication]
+    VERIFY --> DB[(MongoDB\nSystem of Record)]
+    DB --> CASE[Recovery Case]
 
-    RP[Razorpay] -->|signed events| WEBHOOK[Webhook Gateway]
-    WEBHOOK --> VERIFY[HMAC Verification]
-    VERIFY --> EVENTSTORE[Webhook Event Store]
-    EVENTSTORE --> CASES[Recovery Cases]
-    CASES --> DB
+    UI[React + Vite\nMerchant Console] --> AUTH[JWT + RBAC]
+    AUTH --> API[Express API]
+    API --> DB
 
+    CASE --> MODEL[local-recovery-v2]
+    POLICY[Merchant Policy] --> DECIDE[Bounded Decision Engine]
+    MODEL --> DECIDE
+    DECIDE --> RECHECK[Execution-time Policy Re-check]
+    RECHECK --> EXEC[Recovery Executor]
     EXEC --> RPAPI[Razorpay REST API]
-    EXEC --> MSG[Configured Recovery Communication]
-    RPAPI --> LINK[Payment Link]
-    RP -->|verified success| RECOVERY[Recovery Verification]
-    RECOVERY --> DB
+    EXEC --> MAIL[SMTP / Communication]
 
-    API <--> QUEUE[Redis + BullMQ]
-    QUEUE --> WORKER[Recovery Worker]
+    RP -->|verified success| VERIFY2[Recovery Verification]
+    VERIFY2 --> DB
+
+    API <--> Q[Redis + BullMQ]
+    Q --> WORKER[Recovery Worker]
     WORKER --> DB
-    CASES --> AUDIT[Audit Events]
-    AUDIT --> DB
 
     MODEL -. optional reasoning .-> LLM[Optional LLM]
-    LLM -. allowed action set only .-> DECISION
+    LLM -. approved actions only .-> DECIDE
 ```
 
 ## 3. Component responsibilities
 
 ### React/Vite merchant console
 
-The web application provides the merchant-facing command center, recovery queue, decision intelligence view, policy/controls view, operations panel and account/profile controls.
+The web console provides the merchant-facing Command Center, Recovery Cases, Decision Intelligence, Policy & Controls, Operations, and account/profile controls.
 
-The UI is a presentation and orchestration surface. It does not contain provider secrets and it cannot bypass server-side policy checks.
+The UI is not an authorization boundary. Provider secrets are never rendered, and all important policy and execution checks happen on the server.
 
 ### Express API
 
-The API owns:
-
-- authentication and authorization
-- merchant-scoped data access
-- webhook ingestion
-- case lifecycle operations
-- policy evaluation
-- AI/ML orchestration
-- provider actions
-- audit and communication history
+The API owns authentication, merchant-scoped access, case lifecycle operations, policy evaluation, AI orchestration, provider actions, audit data, communications, experiments and operational endpoints.
 
 ### MongoDB
 
-MongoDB is the **application system of record**. The main persisted domains are:
-
-- merchants
-- users
-- Razorpay connections
-- recovery cases
-- webhook events
-- audit events
-- experiments
-- recovery outcomes
-- communication events
+MongoDB is the durable application system of record. Persisted domains include merchants, users, Razorpay connections, recovery cases, webhook events, audit events, experiments, communication events and recovery outcomes.
 
 Redis is not used as the business database.
 
 ### Redis + BullMQ
 
-Redis/BullMQ is infrastructure for asynchronous work such as delayed evaluation, retries and worker execution. Jobs are disposable orchestration state; durable business state remains in MongoDB.
+Redis/BullMQ handles delayed evaluation, retries and worker execution. Job state is disposable orchestration state; business state must remain recoverable from MongoDB and verified provider events.
 
-The worker is intentionally separate from the HTTP API so recovery work can continue without keeping a browser session open.
+### Razorpay integration
 
-### Razorpay adapter
+The provider layer isolates credential handling and Razorpay REST operations from the recovery engine. Eligible cases can create a real Razorpay Payment Link in provider-connected Test Mode/controlled deployments.
 
-The provider adapter isolates Razorpay-specific API calls and credential handling from the recovery engine. The implemented provider action is Payment Link creation for eligible cases.
-
-Provider success remains an external truth boundary: creating a Payment Link never directly marks a case as recovered.
+Creating a Payment Link does not mark a case recovered. A verified success event is required.
 
 ## 4. Authentication and merchant isolation
 
-Production mode follows:
+Production-oriented mode follows:
 
 ```text
 Registration / Login
@@ -111,51 +87,46 @@ JWT access token
         ↓
 Merchant identity + role
         ↓
-Merchant-scoped API queries
+Merchant-scoped API access
         ↓
 MongoDB
 ```
 
-Roles currently supported:
+Roles:
 
-- `owner`
-- `admin`
-- `operator`
-- `viewer`
+```text
+owner · admin · operator · viewer
+```
 
-Passwords are bcrypt-hashed. Provider credentials are encrypted before persistence. The frontend profile menu can terminate the local merchant session by removing the access token and returning to the authentication gate.
+Passwords are bcrypt-hashed. Provider secrets are encrypted before persistence. The Profile menu exposes account state and a local sign-out control that clears the browser session and returns to the authentication gate.
 
-## 5. Event ingestion and verification
-
-The Razorpay webhook path is:
+## 5. Razorpay webhook ingestion
 
 ```text
 Razorpay event
-    ↓
-merchant-specific webhook route
-    ↓
+      ↓
+merchant-specific route
+      ↓
 raw-body HMAC verification
-    ↓
-duplicate-event check
-    ↓
-MongoDB webhook event record
-    ↓
-recovery case correlation
-    ↓
-AI + policy pipeline
+      ↓
+deduplication
+      ↓
+persist webhook event
+      ↓
+correlate/create recovery case
+      ↓
+schedule recovery evaluation
 ```
 
-The route is:
+Route:
 
 ```text
-POST /api/webhooks/razorpay/<merchantId>
+POST /api/webhooks/razorpay/<merchant-id>
 ```
 
-The implementation validates the signature over the raw request body before trusting the event. When a provider event ID is available it is used for deduplication; otherwise a deterministic event hash provides a fallback.
+The implementation validates the signature over the raw request body. When a provider event ID is available it is used for deduplication; a deterministic payload hash is retained as fallback identity material.
 
-Only verified events are allowed to influence recovery state.
-
-## 6. Recovery case state machine
+## 6. Recovery case lifecycle
 
 ```text
 DETECTED
@@ -168,37 +139,25 @@ PLANNED
    ↓
 EXECUTING
    ↓
-MONITORING ───────────────► RECOVERED
+MONITORING ─────────► RECOVERED
    │
-   ├───────────────────────► STOPPED
-   └───────────────────────► EXPIRED
+   ├─────────────────► STOPPED
+   └─────────────────► EXPIRED
 ```
 
-A case may wait because of merchant policy, including a grace period or quiet hours.
+A case can remain in `awaiting_window` because of the merchant grace period, quiet hours or another policy-controlled timing boundary.
 
-**`recovered` is a provider-confirmed state.** A model recommendation, outbound message or created Payment Link is not sufficient.
+`recovered` is reserved for provider-confirmed outcomes.
 
-## 7. AI and decision pipeline
+## 7. AI and decisioning
 
-### 7.1 Feature construction
+### 7.1 Local model
 
-The local model uses provider and case context including:
+`server/src/ai/riskModel.js` implements `local-recovery-v2` as a deterministic and interpretable scoring model.
 
-- failure-code prior
-- recovery-type prior
-- event freshness
-- customer intent
-- customer contact reachability
-- communication consent
-- amount opportunity
-- provider-context completeness
-- previous-attempt pressure
+It considers signals such as failure profile, recovery type, event freshness, customer intent, reachability, consent, amount opportunity, provider-context completeness and previous-attempt pressure.
 
-### 7.2 Local recovery model
-
-`server/src/ai/riskModel.js` implements `local-recovery-v2` as a deterministic, interpretable scoring model.
-
-The model returns:
+Outputs include:
 
 ```text
 riskScore
@@ -208,162 +167,140 @@ confidence
 uncertainty
 dataQuality
 modelVersion
-feature signals
+features
+signals
 ```
 
-`expectedRecoveryMinor` is an opportunity estimate used for ranking; it is not an accounting value and is never treated as actual recovered revenue.
+`expectedRecoveryMinor` is an opportunity estimate used for prioritization. It is not recovered money.
 
-The repository does not claim to be trained on proprietary production labels. The model is deliberately deterministic and inspectable for the buildathon.
+### 7.2 Bounded decision engine
 
-### 7.3 Decision engine
+The decision engine evaluates only policy-approved actions:
 
-The decision layer maps the current case to a bounded action set such as:
+```text
+wait
+send_payment_reminder
+create_payment_link
+request_payment_method_update
+create_human_task
+stop_case
+```
 
-- `wait`
-- `send_payment_reminder`
-- `create_payment_link`
-- `request_payment_method_update`
-- `create_human_task`
-- `stop_case`
+Failure evidence can steer eligible cases toward payment-method update instead of a generic reminder. High-value or uncertain cases can be routed to human review.
 
-The available set is first restricted by policy. The local decision engine then chooses a recommendation using recovery potential, value and safety conditions.
+### 7.3 Optional LLM
 
-### 7.4 Optional LLM reasoning
+When configured, the LLM receives normalized case facts and the already approved action set. It cannot invent provider operations, discounts, links, deadlines, customer facts or disallowed actions.
 
-An LLM can provide structured reasoning when `AI_API_KEY` is configured. It receives normalized case facts and the action set already allowed by policy.
+Invalid or unavailable LLM output falls back to the deterministic local decision.
 
-The LLM is not a provider credential holder and is not authorized to invent arbitrary operations, discounts, links, deadlines or customer facts.
+## 8. Policy enforcement
 
-If the LLM fails or returns an invalid action, the deterministic local decision remains authoritative.
-
-## 8. Policy and guardrails
-
-Merchant policy exists outside the model. Relevant constraints include:
+Merchant policy is independent from the AI model. Relevant controls include:
 
 - recovery window
 - grace period
 - quiet hours
-- maximum attempts per case
+- maximum attempts
 - automatic-contact cap
 - human-approval threshold
 - allowed communication channels
+- consent
 - terminal case state
-- consent requirements
 
-The same principle is enforced twice:
+The policy is enforced twice:
 
 ```text
-Case arrives
-    ↓
-Policy pre-filter
-    ↓
+case enters pipeline
+      ↓
+policy pre-filter
+      ↓
 AI / decisioning
-    ↓
-Policy re-check
-    ↓
-Provider or communication side effect
+      ↓
+execution-time policy re-check
+      ↓
+side effect
 ```
 
-The second check is essential because policy or case state may have changed after planning.
+The second check prevents a stale plan from bypassing a policy or case-state change that happened after planning.
 
-## 9. Recovery execution
+## 9. Execution
 
-For an eligible case the executor can:
+For an eligible action, the executor:
 
-1. Re-load current case state.
-2. Re-evaluate current merchant policy.
-3. Validate that the requested action is allowed.
-4. Apply an idempotent operation key.
-5. Perform the provider/communication side effect.
-6. Persist the attempt and provider reference.
-7. Move the case into a state that waits for provider confirmation.
+1. reloads the current case
+2. reloads current merchant policy
+3. verifies that the requested action is still allowed
+4. creates an idempotent operation identity
+5. performs the provider/communication side effect
+6. persists attempt status and provider/communication references
+7. leaves the case waiting for the provider outcome where applicable
 
-For Payment Link recovery, the provider reference is stored on the case. The system deliberately does not translate “Payment Link created” into “money recovered.”
-
-## 10. Recovery verification
-
-The verification path is:
+## 10. Provider-grounded recovery verification
 
 ```text
-Razorpay success event
-        ↓
-HMAC verification
-        ↓
-Event deduplication
-        ↓
-Case / provider correlation
-        ↓
-Recovery outcome
-        ↓
-Recovered amount attribution
-        ↓
-Case = RECOVERED
+Recovery action / Payment Link
+            ↓
+customer completes payment
+            ↓
+verified Razorpay success event
+            ↓
+provider/case correlation
+            ↓
+RecoveryOutcome
+            ↓
+recoveredAmountMinor attributed
+            ↓
+case = recovered
 ```
 
-This protects the business metric from false positives caused by clicks, emails, created links or model predictions.
+A recommendation, email, click, Payment Link creation, or API acknowledgement is never treated as revenue recovered on its own.
 
 ## 11. Idempotency and consistency
 
-Important protections include:
+The system uses:
 
-- merchant-scoped uniqueness
+- merchant-scoped unique case keys
 - provider event deduplication
-- deterministic action idempotency keys
+- idempotent action keys
 - terminal-state checks
 - current-state reload before side effects
 - execution-time policy re-check
-- persisted processing status for webhook events
-- retry/backoff through BullMQ for asynchronous work
+- persisted webhook processing status
+- BullMQ retries/backoff for asynchronous work
 
-The objective is to make repeated provider deliveries and worker retries safe and observable.
+The goal is safe behavior under repeated webhook deliveries, UI retries and worker retries.
 
 ## 12. Auditability
 
-Significant operations produce audit data containing the merchant context, actor information when available, case identity, event/action type, decision context, provider reference and timestamp.
-
-Communication events and verified recovery outcomes are persisted separately so operators can inspect the complete lifecycle of a case.
+Important provider, policy, decision, execution and recovery events are written to the audit trail. Communication events and recovery outcomes are persisted independently so the complete recovery lifecycle can be inspected.
 
 ## 13. Demo and production-oriented modes
 
 ### Demo mode
 
-`DEMO_MODE=true`
-
-- synthetic merchant workspace
-- no provider secrets required
-- synthetic recovery cases
-- no provider side effects
-- demo success simulation available
+`DEMO_MODE=true` provides a synthetic merchant workspace, synthetic recovery data, no provider credentials, no live provider calls and demo-only state simulation/reset endpoints.
 
 ### Production-oriented mode
 
-`DEMO_MODE=false`
+`DEMO_MODE=false` requires MongoDB, authentication/RBAC, merchant-scoped access, encrypted provider credentials and signed Razorpay webhooks. Demo mutation endpoints are blocked, while real provider actions are available where configured.
 
-- MongoDB required
-- authentication and RBAC enforced
-- merchant credentials encrypted before storage
-- signed provider webhooks required
-- synthetic demo reset/success endpoints blocked
-- real Razorpay Payment Link creation available for eligible cases
+## 14. Operational failure behavior
 
-## 14. Failure handling
-
-| Failure or condition | Expected behavior |
+| Condition | Behavior |
 |---|---|
-| LLM unavailable | fall back to deterministic local decisioning |
-| LLM returns invalid action | ignore invalid output and retain safe decision |
-| missing consent | block customer contact |
-| quiet hours | delay / wait |
-| grace period active | delay / wait |
-| attempt limit reached | stop further automated attempts |
-| high-value / uncertain case | route toward human review when applicable |
-| duplicate provider event | idempotent no-op / previously processed path |
-| invalid webhook signature | reject |
-| provider API error | persist failure and leave state observable for retry/review |
-| verified success event | attribute recovery and close eligible case |
+| Invalid webhook signature | Reject before recovery state change |
+| Duplicate provider event | Idempotent duplicate path |
+| Missing consent | Customer contact blocked |
+| Quiet hours / grace period | Case waits |
+| Attempt limit | Further automation blocked |
+| High value / high uncertainty | Human-review boundary can apply |
+| LLM unavailable/invalid | Local deterministic decision retained |
+| Provider action failure | Attempt/error remains observable for review/retry |
+| Verified provider success | Recovered amount attributed and case closed |
 
-## 15. Current implementation boundary
+## 15. Final implementation boundary
 
-The repository demonstrates the complete control-plane workflow in a safe local/Test Mode environment. It should be described as **production-oriented**, not as a fully operated public SaaS.
+The buildathon repository demonstrates the end-to-end recovery control plane locally and in Razorpay Test Mode. It is **production-oriented**, not presented as an already-operated public Live Mode SaaS.
 
-A public Live Mode deployment would additionally require managed infrastructure, backups, centralized observability, secret rotation, formal security testing, messaging delivery/bounce infrastructure, model calibration against sufficient production outcomes, and completion of any Razorpay Technology Partner/OAuth onboarding required by the intended multi-merchant business model.
+A Live Mode launch would still require managed infrastructure, backups, centralized observability, secret rotation, formal security testing, messaging delivery/bounce handling, sufficient outcome-based model calibration and the appropriate Razorpay partner/OAuth onboarding for the intended multi-merchant operating model.
