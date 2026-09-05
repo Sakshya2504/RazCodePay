@@ -19,6 +19,7 @@ export function registerApiRoutes(app) {
   router.post('/cases/:id/execute', requireRole('owner', 'admin', 'operator'), async (req, res, next) => { try { return res.json(await executeRecoveryAttempt(merchant(req), req.params.id)); } catch (e) { return next(e); } });
   router.post('/cases/:id/simulate-success', requireRole('owner', 'admin', 'operator'), async (req, res, next) => {
     try {
+      if (!config.demoMode) return res.status(403).json({ error: 'The success simulator is available only in demo mode.' });
       const id = merchant(req), current = await getCase(id, req.params.id);
       if (!current) return res.status(404).json({ error: 'Case not found' });
       const payload = { event: 'payment.captured', created_at: Math.floor(Date.now() / 1000), payload: { payment: { entity: { id: current.provider?.entityId || `pay_${current.id}`, order_id: current.provider?.orderId || null, amount: current.amountMinor, currency: current.currency } } } };
@@ -36,7 +37,12 @@ export function registerApiRoutes(app) {
       return res.json({ case: updated });
     } catch (e) { return next(e); }
   });
-  router.post('/demo/reset', requireRole('owner', 'admin'), async (req, res, next) => { try { const id = merchant(req); await resetDemo(id); return res.json({ message: 'Synthetic cohort reset.', summary: await summarize(id) }); } catch (e) { return next(e); } });
+  router.post('/demo/reset', requireRole('owner', 'admin'), async (req, res, next) => {
+    try {
+      if (!config.demoMode) return res.status(403).json({ error: 'Synthetic demo data is disabled in production mode.' });
+      const id = merchant(req); await resetDemo(id); return res.json({ message: 'Synthetic cohort reset.', summary: await summarize(id) });
+    } catch (e) { return next(e); }
+  });
   router.get('/audit', async (req, res, next) => { try { return res.json({ audit: await listAudits(merchant(req)) }); } catch (e) { return next(e); } });
   router.get('/policy', (_req, res) => res.json(getPolicy()));
   router.get('/merchant', async (req, res, next) => { try { const value = await getMerchant(merchant(req)); return res.json({ merchant: value }); } catch (e) { return next(e); } });
