@@ -8,5 +8,16 @@ services:
     volumes:
       - razcodepay_mongodb:/data/db
 
+  redis:
+    image: redis:8-alpine
+    container_name: razcodepay-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - razcodepay_redis:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
 volumes:
   razcodepay_mongodb:
+  razcodepay_redis:
