@@ -106,3 +106,4 @@ export async function getMerchant(merchantId) { if (memoryMode()) return { id: m
 export async function saveRazorpayConnection(merchantId, value) { if (memoryMode()) return value; return RazorpayConnection.findOneAndUpdate({ merchantId }, { $set: value }, { upsert: true, new: true }).lean(); }
 export async function getRazorpayConnection(merchantId) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return RazorpayConnection.findOne({ merchantId }); }
 export async function clearStore() { memory.clear(); memoryEvents.clear(); memoryAudits.length = 0; }
+export const resetStore = clearStore;
