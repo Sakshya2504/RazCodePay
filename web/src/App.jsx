@@ -2,6 +2,29 @@ import { useEffect, useMemo, useState } from 'react';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
+// Human-friendly fallback data keeps the UI inspectable while MongoDB/API is being configured locally.
+// It is intentionally labelled as demo data so it can never be mistaken for real merchant revenue.
+const FALLBACK_CASES = Array.from({ length: 8 }, (_, index) => ({
+  id: `demo-${String(index + 1).padStart(3, '0')}`,
+  type: index % 3 === 0 ? 'failed_subscription' : index % 3 === 1 ? 'invoice_overdue' : 'checkout_abandonment',
+  state: index === 0 || index === 3 ? 'recovered' : index === 6 ? 'stopped' : 'planned',
+  amountMinor: [249900, 499900, 129900, 799900, 199900, 349900, 899900, 159900][index],
+  currency: 'INR',
+  failureCode: index % 2 === 0 ? 'PAYMENT_FAILED' : 'CUSTOMER_ACTION_REQUIRED',
+  failureDescription: index % 2 === 0 ? 'Payment attempt failed and may be recoverable.' : 'Customer action is required to complete payment.',
+  riskScore: [0.72, 0.48, 0.63, 0.81, 0.55, 0.68, 0.91, 0.44][index],
+  recoverabilityScore: [0.84, 0.62, 0.71, 0.89, 0.66, 0.76, 0.21, 0.58][index],
+  attempts: index === 0 ? [{ action: 'send_payment_reminder', status: 'sent' }] : [],
+  explanation: index === 6
+    ? 'Automation was stopped by the merchant before another customer-facing action.'
+    : 'Email consent is active, the case is within the recovery window, and the selected action remains inside the configured policy.',
+  nextActionAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+  recoveredAmountMinor: index === 0 || index === 3 ? [249900, 799900][index === 0 ? 0 : 1] : 0,
+  openedAt: new Date(Date.now() - (index + 1) * 60 * 60 * 1000).toISOString(),
+  closedAt: index === 0 || index === 3 || index === 6 ? new Date().toISOString() : null,
+  stopReason: index === 6 ? 'merchant_demo_stop' : null,
+}));
+
 function formatMoney(minor) {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
@@ -14,11 +37,28 @@ function StatusPill({ state }) {
   return <span className={`pill pill-${state}`}>{state.replaceAll('_', ' ')}</span>;
 }
 
+function buildFallbackSummary(cases) {
+  const recoveredRevenue = cases.reduce((total, item) => total + (item.recoveredAmountMinor || 0), 0);
+  const openCases = cases.filter((item) => !['recovered', 'stopped', 'expired'].includes(item.state)).length;
+  const recoveredCases = cases.filter((item) => item.state === 'recovered').length;
+
+  return {
+    revenueAtRisk: cases
+      .filter((item) => !['recovered', 'stopped', 'expired'].includes(item.state))
+      .reduce((total, item) => total + item.amountMinor, 0),
+    recoveredRevenue,
+    recoveryRate: cases.length ? recoveredCases / cases.length : 0,
+    openCases,
+    totalCases: cases.length,
+  };
+}
+
 export default function App() {
   const [summary, setSummary] = useState(null);
   const [cases, setCases] = useState([]);
   const [selectedCase, setSelectedCase] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [connectionMode, setConnectionMode] = useState('checking');
   const [message, setMessage] = useState('');
 
   async function loadDashboard() {
@@ -31,16 +71,30 @@ export default function App() {
       ]);
 
       if (!summaryResponse.ok || !casesResponse.ok) throw new Error('API unavailable');
+
       setSummary(await summaryResponse.json());
       setCases((await casesResponse.json()).cases);
-    } catch (error) {
-      setMessage(error.message);
+      setConnectionMode('api');
+      setMessage('Connected to the RazCodePay API.');
+    } catch {
+      // The fallback is deliberately local-only so the dashboard remains useful before infrastructure setup.
+      setCases(FALLBACK_CASES);
+      setSummary(buildFallbackSummary(FALLBACK_CASES));
+      setConnectionMode('demo');
+      setMessage('API is offline. Showing synthetic demo data so you can inspect the console safely.');
     } finally {
       setLoading(false);
     }
   }
 
   async function seedDemo() {
+    if (connectionMode !== 'api') {
+      setCases(FALLBACK_CASES);
+      setSummary(buildFallbackSummary(FALLBACK_CASES));
+      setMessage('Synthetic demo batch loaded locally. Start the API and MongoDB to persist it.');
+      return;
+    }
+
     setMessage('Seeding 60 synthetic recovery cases…');
     try {
       const response = await fetch(`${API}/demo/seed`, { method: 'POST' });
@@ -53,6 +107,15 @@ export default function App() {
   }
 
   async function stopCase(id) {
+    if (connectionMode !== 'api') {
+      const updated = cases.map((item) => item.id === id
+        ? { ...item, state: 'stopped', stopReason: 'merchant_demo_stop', closedAt: new Date().toISOString() }
+        : item);
+      setCases(updated);
+      setSummary(buildFallbackSummary(updated));
+      return;
+    }
+
     const response = await fetch(`${API}/recovery/cases/${id}/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-RazCodePay-Merchant-Id': 'demo-merchant' },
@@ -82,6 +145,9 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <span className="mode-badge">TEST MODE</span>
+          <span className={`connection-badge connection-${connectionMode}`}>
+            {connectionMode === 'api' ? 'API CONNECTED' : connectionMode === 'demo' ? 'LOCAL DEMO' : 'CONNECTING'}
+          </span>
           <button className="secondary-btn" onClick={loadDashboard}>Refresh</button>
           <button className="primary-btn" onClick={seedDemo}>Seed Demo Batch</button>
         </div>
@@ -108,8 +174,8 @@ export default function App() {
 
         <section className="metrics-grid">
           <article className="metric-card"><span>Revenue at risk</span><strong>{formatMoney(summary?.revenueAtRisk)}</strong><small>eligible open value</small></article>
-          <article className="metric-card"><span>Recovered revenue</span><strong>{formatMoney(summary?.recoveredRevenue)}</strong><small>verified provider success</small></article>
-          <article className="metric-card"><span>Recovery rate</span><strong>{((summary?.recoveryRate || 0) * 100).toFixed(1)}%</strong><small>recovered cases / all cases</small></article>
+          <article className="metric-card"><span>Recovered revenue</span><strong>{formatMoney(summary?.recoveredRevenue)}</strong><small>verified/synthetic demo success</small></article>
+          <article className="metric-card"><span>Recovery rate</span><strong>{((summary?.recoveryRate || 0) * 100).toFixed(1)}%</strong><small>recovered cases / cohort</small></article>
           <article className="metric-card"><span>Active cases</span><strong>{summary?.openCases || 0}</strong><small>awaiting or planned work</small></article>
         </section>
 
