@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import AuthGate from './AuthGate.jsx';
 import Phase2Panel from './Phase2Panel.jsx';
+import ProfileMenu from './ProfileMenu.jsx';
 import './styles.css';
 import './ui-upgrade.css';
 
@@ -25,7 +26,7 @@ class ErrorBoundary extends React.Component {
 }
 
 function Root() {
-  return <React.StrictMode><ErrorBoundary><AuthGate /><Phase2Panel /></ErrorBoundary></React.StrictMode>;
+  return <React.StrictMode><ErrorBoundary><AuthGate /><Phase2Panel /><ProfileMenu /></ErrorBoundary></React.StrictMode>;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
