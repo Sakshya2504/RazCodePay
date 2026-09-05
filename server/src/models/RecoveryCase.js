@@ -13,7 +13,7 @@ const schema = new mongoose.Schema({
   consent: { email: { type: Boolean, default: false }, sms: { type: Boolean, default: false }, whatsapp: { type: Boolean, default: false } },
   experiment: { id: { type: mongoose.Schema.Types.ObjectId, ref: 'Experiment', default: null }, arm: { type: String, default: null } },
   attemptCount: { type: Number, default: 0 },
-  attempts: [{ action: String, channel: String, status: String, idempotencyKey: String, providerReference: String, paymentLink: String, scheduledFor: Date, sentAt: Date, error: String }],
+  attempts: [{ action: String, channel: String, status: String, idempotencyKey: String, providerReference: String, communicationReference: String, paymentLink: String, scheduledFor: Date, sentAt: Date, error: String }],
   riskScore: Number,
   recoverabilityScore: Number,
   ai: mongoose.Schema.Types.Mixed,
