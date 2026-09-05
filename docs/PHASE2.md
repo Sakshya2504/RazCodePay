@@ -1,50 +1,93 @@
-# RazCodePay Phase 2
+# Operations and Advanced Recovery Capabilities
 
-Phase 2 turns the Track 03 prototype into a production-oriented recovery platform while keeping MongoDB as the system of record.
+Phase 2 extends the core Track 03 workflow into an operational recovery platform while preserving a strict separation between durable business state and background infrastructure.
 
-## Added
+## 1. Background recovery jobs
 
-### 1. Background recovery jobs
-- Redis + BullMQ queue
-- delayed recovery evaluation
-- retry/backoff configuration
-- concurrency-ready worker
+Redis + BullMQ provides asynchronous execution for recovery evaluation and delayed work.
+
+Implemented:
+
+- dedicated recovery queue
+- delayed jobs
+- retry/backoff behavior
+- concurrent worker execution
 - queue health endpoint: `GET /api/phase2/queue`
 
-The API still works without Redis; the queue is enabled when `DEMO_MODE=false` and `REDIS_URL` is configured.
+MongoDB remains the source of truth. If Redis is unavailable, the HTTP API can still expose durable application state; queue-backed execution simply becomes unavailable until infrastructure recovers.
 
-### 2. Real customer email adapter
-SMTP-backed email delivery is available through `server/src/services/mailer.js`. Missing SMTP configuration suppresses the send instead of silently pretending a message was delivered.
+## 2. Communication adapter
 
-### 3. Recovery experiments
-MongoDB stores experiments, arms and outcome data.
+SMTP-backed email delivery is implemented through `server/src/services/mailer.js`.
+
+The system records communication attempts. When SMTP is not configured, it suppresses the outbound send rather than pretending that a customer message was delivered.
+
+This distinction is important for auditability.
+
+## 3. Recovery experiments
+
+Experiments are persisted in MongoDB and can contain treatment/control arms and outcome data.
 
 Endpoints:
-- `GET /api/phase2/experiments`
-- `POST /api/phase2/experiments`
-- `POST /api/phase2/experiments/:id/start`
-- `POST /api/phase2/experiments/:id/stop`
-- `GET /api/phase2/experiments/metrics`
-
-Allocation is deterministic by case ID so a case stays in the same experiment bucket.
-
-### 4. Outcome learning
-Every verified recovery records the intervention, experiment arm, recovered amount, time to recovery and model version. This creates the feedback loop required to train future recovery models on real merchant outcomes.
-
-### 5. Razorpay OAuth
-The integration layer supports the Razorpay Technology Partner authorization-code flow, encrypted access/refresh tokens, expiry tracking and token refresh. Razorpay requires Technology Partners to use OAuth to access sub-merchant resources without requiring merchants to disclose their API-key secret.
-
-### 6. Payment Link recovery
-Eligible cases can create a real Razorpay Payment Link in production mode. The link uses a unique case-based `reference_id`, and the case is only marked recovered after a provider success event.
-
-### 7. Merchant communication history
-Communication events are persisted in MongoDB and can be queried per recovery case.
-
-## Production environment
-
-Required core variables:
 
 ```text
+GET  /api/phase2/experiments
+POST /api/phase2/experiments
+POST /api/phase2/experiments/:id/start
+POST /api/phase2/experiments/:id/stop
+GET  /api/phase2/experiments/metrics
+```
+
+Assignment is deterministic by case identity so a recovery case stays in the same experiment bucket.
+
+## 4. Outcome feedback loop
+
+Verified recoveries persist the intervention, experiment arm when applicable, recovered amount, recovery timing and model version.
+
+This creates the data foundation for future calibration and model training. The current repository does not claim that `local-recovery-v2` was trained on a production dataset.
+
+## 5. Razorpay OAuth capability
+
+The integration layer contains OAuth authorization-code flow support for a Technology Partner-style deployment, including protected token persistence and refresh handling where configured.
+
+For the current single-merchant hackathon workflow, direct merchant API-key integration in Test Mode is the practical path. A multi-merchant SaaS should use the provider-approved partner/OAuth onboarding model rather than collecting merchant API secrets directly.
+
+## 6. Payment Link recovery
+
+Eligible cases can create a real Razorpay Payment Link in provider-connected mode.
+
+The recovery case stores the provider correlation/reference so subsequent events can be matched. Creating the link does not close the case.
+
+Only verified provider success can produce a recovered outcome.
+
+## 7. Communication history
+
+Communication events are stored in MongoDB and are queryable by recovery case:
+
+```text
+GET /api/phase2/cases/:caseId/communications
+```
+
+The record distinguishes outbound status and provider references when available.
+
+## 8. Operational controls
+
+The merchant console exposes:
+
+- Razorpay connection state
+- recovery policy
+- experiment controls
+- queue health
+- communication history
+- account/profile state
+
+The frontend is not the security boundary; policy and authorization are enforced by the backend.
+
+## 9. Environment groups
+
+Core production-oriented configuration:
+
+```env
 DEMO_MODE=false
 MONGODB_URI=...
 REDIS_URL=...
@@ -52,17 +95,16 @@ JWT_SECRET=...
 ENCRYPTION_KEY=...
 ```
 
-For OAuth:
+Optional LLM:
 
-```text
-RAZORPAY_OAUTH_CLIENT_ID=...
-RAZORPAY_OAUTH_CLIENT_SECRET=...
-RAZORPAY_OAUTH_REDIRECT_URI=https://<your-domain>/api/integrations/razorpay/oauth/callback
+```env
+AI_API_KEY=...
+AI_MODEL=gpt-4o-mini
 ```
 
-For email:
+Optional SMTP:
 
-```text
+```env
 SMTP_HOST=...
 SMTP_PORT=587
 SMTP_USER=...
@@ -70,11 +112,25 @@ SMTP_PASSWORD=...
 MAIL_FROM=...
 ```
 
-## Remaining go-live work
-- complete Razorpay Technology Partner approval/onboarding
-- configure production HTTPS and webhook URLs
-- production secret manager rather than `.env`
-- real delivery-provider webhooks for delivery/bounce status
-- centralized monitoring and alerting
-- penetration testing and dependency remediation
-- model calibration and training from sufficient production outcome volume
+Optional Razorpay OAuth:
+
+```env
+RAZORPAY_OAUTH_CLIENT_ID=...
+RAZORPAY_OAUTH_CLIENT_SECRET=...
+RAZORPAY_OAUTH_REDIRECT_URI=https://<domain>/api/integrations/razorpay/oauth/callback
+```
+
+## 10. Remaining go-live work
+
+The buildathon implementation is production-oriented, but a public Live Mode service would still require:
+
+- managed infrastructure and database backups
+- centralized logs, metrics and alerting
+- production secret management and rotation
+- HTTPS and hardened network configuration
+- messaging delivery/bounce/complaint handling
+- penetration testing and formal security review
+- dependency and vulnerability management
+- model calibration against sufficient real outcomes
+- operational incident/runbook coverage
+- Razorpay Technology Partner/OAuth onboarding for the intended multi-merchant business model
