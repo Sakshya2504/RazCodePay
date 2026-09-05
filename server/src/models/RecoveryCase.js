@@ -8,7 +8,7 @@ const schema = new mongoose.Schema({
   amountMinor: { type: Number, required: true, min: 0 },
   currency: { type: String, default: 'INR' },
   customer: { id: String, name: String, email: String, contact: String },
-  provider: { entityId: String, entityType: String, orderId: String, subscriptionId: String, invoiceId: String },
+  provider: { entityId: String, entityType: String, orderId: String, subscriptionId: String, invoiceId: String, paymentLinkId: String },
   failure: { code: String, description: String },
   consent: { email: { type: Boolean, default: false }, sms: { type: Boolean, default: false }, whatsapp: { type: Boolean, default: false } },
   experiment: { id: { type: mongoose.Schema.Types.ObjectId, ref: 'Experiment', default: null }, arm: { type: String, default: null } },
