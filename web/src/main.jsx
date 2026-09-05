@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import AuthGate from './AuthGate.jsx';
 import Phase2Panel from './Phase2Panel.jsx';
 import './styles.css';
+import './ui-upgrade.css';
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (input, init = {}) => {
