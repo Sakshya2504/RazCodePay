@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { addCase, getCase, updateCase, listCases, recordEvent, markEventStatus, summarize, recordRecoveryOutcome, getMerchant, listExperiments } from '../store.js';
-import { evaluatePolicy } from './policy.js';
+import { evaluatePolicy, normalizePolicy } from './policy.js';
 import { recommendRecoveryAction } from './decisionEngine.js';
 import { writeAudit } from './audit.js';
 import { enqueueRecoveryJob } from '../queue.js';
@@ -46,16 +46,19 @@ export async function processVerifiedEvent({ merchantId = 'demo-merchant', event
 
     if (!FAILURE_EVENTS.has(eventType) || data.amountMinor <= 0) { await markEventStatus(dedupeKey, 'ignored'); return { recovered: false, ignored: true, eventId: providerEventId || dedupeKey }; }
     const cases = await listCases(merchantId);
+    const merchant = await getMerchant(merchantId);
+    const policy = normalizePolicy(merchant?.policy || {});
     const caseKey = `${data.provider.invoiceId || data.provider.subscriptionId || data.provider.orderId || data.provider.entityId}:${data.type}`;
     let current = cases.find((item) => item.caseKey === caseKey || item.provider?.entityId === data.provider.entityId);
     if (!current) {
-      current = await addCase(merchantId, { caseKey, type: data.type, state: 'awaiting_window', amountMinor: data.amountMinor, currency: data.currency, customer: data.customer, provider: data.provider, failure: data.failure, consent: { email: Boolean(data.customer.email), sms: false, whatsapp: false }, attemptCount: 0, attempts: [], riskScore: null, recoverabilityScore: null, ai: null, nextActionAt: new Date(Date.now() + 30 * 60000), recoveredAmountMinor: 0, recoveredProviderId: null, openedAt: new Date() });
+      const nextActionAt = new Date(Date.now() + policy.graceMinutes * 60000);
+      current = await addCase(merchantId, { caseKey, type: data.type, state: 'awaiting_window', amountMinor: data.amountMinor, currency: data.currency, customer: data.customer, provider: data.provider, failure: data.failure, consent: { email: Boolean(data.customer.email), sms: false, whatsapp: false }, attemptCount: 0, attempts: [], riskScore: null, recoverabilityScore: null, ai: null, nextActionAt, recoveredAmountMinor: 0, recoveredProviderId: null, openedAt: new Date() });
       const experiment = await listActiveExperiment(merchantId);
       if (experiment) {
         const arm = pickArm(current.id, experiment);
         current = arm ? await updateCase(merchantId, current.id, { experiment: { id: experiment.id, arm: arm.name } }) : current;
       }
-      await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor, experiment: current.experiment || null } });
+      await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor, experiment: current.experiment || null, graceMinutes: policy.graceMinutes } });
     } else {
       current = await updateCase(merchantId, current.id, { failure: { ...current.failure, ...data.failure } });
     }
