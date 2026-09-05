@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { getCase, listCases, updateCase, resetDemo, summarize, listAudits, getMerchant } from '../store.js';
+import { getCase, listCases, updateCase, resetDemo, summarize, listAudits, getMerchant, updateMerchantPolicy } from '../store.js';
 import { evaluateCase, processVerifiedEvent } from '../services/recovery.js';
 import { executeRecoveryAttempt } from '../services/executor.js';
-import { getPolicy } from '../services/policy.js';
+import { getPolicy, normalizePolicy, validateMerchantPolicy } from '../services/policy.js';
 import { writeAudit } from '../services/audit.js';
 import { requireAuth, requireRole } from '../services/security.js';
 import { config } from '../config.js';
@@ -12,7 +12,7 @@ export function registerApiRoutes(app) {
   const merchant = (req) => config.demoMode ? (req.get('X-RazCodePay-Merchant-Id') || 'demo-merchant') : req.auth.merchantId;
   router.use(requireAuth);
 
-  router.get('/dashboard', async (req, res, next) => { try { const id = merchant(req); return res.json({ summary: await summarize(id), cases: (await listCases(id)).slice(0, 40), policy: getPolicy() }); } catch (e) { return next(e); } });
+  router.get('/dashboard', async (req, res, next) => { try { const id = merchant(req); const value = await getMerchant(id); return res.json({ summary: await summarize(id), cases: (await listCases(id)).slice(0, 40), policy: normalizePolicy(value?.policy || {}) }); } catch (e) { return next(e); } });
   router.get('/cases', async (req, res, next) => { try { return res.json({ cases: await listCases(merchant(req)) }); } catch (e) { return next(e); } });
   router.get('/cases/:id', async (req, res, next) => { try { const item = await getCase(merchant(req), req.params.id); return item ? res.json({ case: item }) : res.status(404).json({ error: 'Case not found' }); } catch (e) { return next(e); } });
   router.post('/cases/:id/evaluate', requireRole('owner', 'admin', 'operator'), async (req, res, next) => { try { return res.json(await evaluateCase(merchant(req), req.params.id)); } catch (e) { return next(e); } });
@@ -44,7 +44,17 @@ export function registerApiRoutes(app) {
     } catch (e) { return next(e); }
   });
   router.get('/audit', async (req, res, next) => { try { return res.json({ audit: await listAudits(merchant(req)) }); } catch (e) { return next(e); } });
-  router.get('/policy', (_req, res) => res.json(getPolicy()));
+  router.get('/policy', async (req, res, next) => { try { const value = await getMerchant(merchant(req)); return res.json(normalizePolicy(value?.policy || getPolicy())); } catch (e) { return next(e); } });
+  router.put('/policy', requireRole('owner', 'admin'), async (req, res, next) => {
+    try {
+      const id = merchant(req);
+      const current = await getMerchant(id);
+      const nextPolicy = validateMerchantPolicy({ ...(current?.policy || {}), ...(req.body || {}) });
+      const updated = await updateMerchantPolicy(id, nextPolicy);
+      await writeAudit({ merchantId: id, actorType: 'user', actorId: req.auth?.sub, eventName: 'merchant_policy_updated', details: { policy: nextPolicy } });
+      return res.json({ policy: normalizePolicy(updated?.policy || nextPolicy) });
+    } catch (e) { return next(e); }
+  });
   router.get('/merchant', async (req, res, next) => { try { const value = await getMerchant(merchant(req)); return res.json({ merchant: value }); } catch (e) { return next(e); } });
 
   app.use('/api', router);
