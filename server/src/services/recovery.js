@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { addCase, getCase, updateCase, listCases, recordEvent, hasEvent, summarize } from '../store.js';
+import { addCase, getCase, updateCase, listCases, recordEvent, summarize } from '../store.js';
 import { evaluatePolicy } from './policy.js';
 import { recommendRecoveryAction } from './decisionEngine.js';
 import { writeAudit } from './audit.js';
@@ -10,46 +10,53 @@ const SUCCESS_EVENTS = new Set(['payment.captured', 'order.paid', 'subscription.
 export function createPayloadHash(rawBody) { return crypto.createHash('sha256').update(rawBody).digest('hex'); }
 function entityFrom(payload) { const root = payload?.payload || {}; return root.payment?.entity || root.subscription?.entity || root.invoice?.entity || root.order?.entity || {}; }
 function canonical(eventType, payload) {
-  const entity = entityFrom(payload), isInvoice = eventType.startsWith('invoice.'), isSubscription = eventType.startsWith('subscription.');
-  return { type: isInvoice ? 'invoice_overdue' : eventType.startsWith('order.') ? 'checkout_abandonment' : 'failed_subscription', amountMinor: Number(entity.amount || entity.total_amount || 0), currency: entity.currency || 'INR', customerId: entity.customer_id || entity.email || 'unknown-customer', providerEntityId: entity.id || null, providerOrderId: entity.order_id || (eventType.startsWith('order.') ? entity.id : null), providerSubscriptionId: entity.subscription_id || (isSubscription ? entity.id : null), providerInvoiceId: entity.invoice_id || (isInvoice ? entity.id : null), failureCode: entity.error_code || entity.error?.code || null, failureDescription: entity.error_description || entity.error?.description || null };
-}
-function findMatchingCase(merchantId, data) {
-  const ids = [data.providerEntityId, data.providerOrderId, data.providerSubscriptionId, data.providerInvoiceId].filter(Boolean);
-  return listCases(merchantId).find((item) => ids.some((id) => [item.providerEntityId, item.providerOrderId, item.providerSubscriptionId, item.providerInvoiceId].includes(id)));
+  const entity = entityFrom(payload);
+  const invoice = eventType.startsWith('invoice.');
+  const subscription = eventType.startsWith('subscription.');
+  return {
+    type: invoice ? 'invoice_overdue' : eventType.startsWith('order.') ? 'checkout_abandonment' : 'failed_subscription',
+    amountMinor: Number(entity.amount || entity.total_amount || 0),
+    currency: entity.currency || 'INR',
+    customer: { id: entity.customer_id || null, name: entity.customer_details?.customer_name || entity.customer_details?.name || null, email: entity.email || entity.customer_details?.customer_email || null, contact: entity.contact || entity.customer_details?.customer_contact || null },
+    provider: { entityId: entity.id || null, entityType: eventType.split('.')[0], orderId: entity.order_id || (eventType.startsWith('order.') ? entity.id : null), subscriptionId: entity.subscription_id || (subscription ? entity.id : null), invoiceId: entity.invoice_id || (invoice ? entity.id : null) },
+    failure: { code: entity.error_code || entity.error?.code || null, description: entity.error_description || entity.error?.description || null },
+  };
 }
 
-export async function processVerifiedEvent({ merchantId = 'demo-merchant', eventType, providerEventId, payload, dedupeKey, payloadSha256 }) {
-  if (hasEvent(dedupeKey)) return { duplicate: true, recovered: false, eventId: providerEventId || dedupeKey };
-  recordEvent(dedupeKey, { eventType, providerEventId, payloadSha256, receivedAt: new Date().toISOString() });
+export async function processVerifiedEvent({ merchantId = 'demo-merchant', eventType, providerEventId, payload, dedupeKey, payloadSha256, signatureVerified = false }) {
+  const inserted = await recordEvent(dedupeKey, { merchantId, providerEventId, eventType, dedupeKey, payloadSha256, payload, signatureVerified, processingStatus: 'received', occurredAt: payload?.created_at ? new Date(payload.created_at * 1000) : new Date() });
+  if (!inserted) return { duplicate: true, recovered: false, eventId: providerEventId || dedupeKey };
+
   const data = canonical(eventType, payload);
-
   if (SUCCESS_EVENTS.has(eventType)) {
-    const current = findMatchingCase(merchantId, data);
+    const cases = await listCases(merchantId);
+    const ids = new Set([data.provider.entityId, data.provider.orderId, data.provider.subscriptionId, data.provider.invoiceId].filter(Boolean));
+    const current = cases.find((item) => [item.provider?.entityId, item.provider?.orderId, item.provider?.subscriptionId, item.provider?.invoiceId].some((id) => ids.has(id)) && !['recovered', 'stopped', 'expired'].includes(item.state));
     if (!current) return { recovered: false, ignored: true, eventId: providerEventId || dedupeKey };
-    const updated = updateCase(merchantId, current.id, { state: 'recovered', recoveredAmountMinor: data.amountMinor || current.amountMinor, recoveredProviderId: data.providerEntityId || data.providerOrderId || data.providerSubscriptionId || data.providerInvoiceId, nextActionAt: null, closedAt: new Date().toISOString(), stopReason: null, explanation: `Recovered from verified Razorpay event: ${eventType}.` });
-    await writeAudit({ merchantId, caseId: current.id, eventName: 'case_recovered', details: { eventType, providerEventId, amountMinor: updated.recoveredAmountMinor } });
+    const updated = await updateCase(merchantId, current.id, { state: 'recovered', recoveredAmountMinor: data.amountMinor || current.amountMinor, recoveredProviderId: data.provider.entityId || data.provider.orderId || data.provider.subscriptionId || data.provider.invoiceId, nextActionAt: null, closedAt: new Date(), stopReason: null, explanation: `Recovered from verified Razorpay event: ${eventType}.` });
+    await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_recovered', details: { eventType, providerEventId, amountMinor: updated.recoveredAmountMinor } });
     return { recovered: true, caseId: current.id, eventId: providerEventId || dedupeKey };
   }
 
   if (!FAILURE_EVENTS.has(eventType) || data.amountMinor <= 0) return { recovered: false, ignored: true, eventId: providerEventId || dedupeKey };
-  const cases = listCases(merchantId);
-  const caseKey = `${data.providerInvoiceId || data.providerSubscriptionId || data.providerOrderId || data.providerEntityId}:${data.type}`;
-  let current = cases.find((item) => item.caseKey === caseKey || item.providerEntityId === data.providerEntityId);
+  const cases = await listCases(merchantId);
+  const caseKey = `${data.provider.invoiceId || data.provider.subscriptionId || data.provider.orderId || data.provider.entityId}:${data.type}`;
+  let current = cases.find((item) => item.caseKey === caseKey || item.provider?.entityId === data.provider.entityId);
   if (!current) {
-    current = addCase(merchantId, { id: `case-live-${crypto.randomUUID().slice(0, 8)}`, caseKey, merchantId, type: data.type, state: 'awaiting_window', amountMinor: data.amountMinor, currency: data.currency, customerId: data.customerId, providerEntityId: data.providerEntityId, providerOrderId: data.providerOrderId, providerSubscriptionId: data.providerSubscriptionId, providerInvoiceId: data.providerInvoiceId, failureCode: data.failureCode, failureDescription: data.failureDescription, consent: { email: true, sms: false, whatsapp: false }, attemptCount: 0, attempts: [], riskScore: null, recoverabilityScore: null, ai: null, nextActionAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(), recoveredAmountMinor: 0, recoveredProviderId: null, openedAt: new Date().toISOString(), closedAt: null, stopReason: null, updatedAt: new Date().toISOString() });
-    await writeAudit({ merchantId, caseId: current.id, eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor } });
+    current = await addCase(merchantId, { caseKey, type: data.type, state: 'awaiting_window', amountMinor: data.amountMinor, currency: data.currency, customer: data.customer, provider: data.provider, failure: data.failure, consent: { email: Boolean(data.customer.email), sms: false, whatsapp: false }, attemptCount: 0, attempts: [], riskScore: null, recoverabilityScore: null, ai: null, nextActionAt: new Date(Date.now() + 30 * 60000), recoveredAmountMinor: 0, recoveredProviderId: null, openedAt: new Date() });
+    await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor } });
   } else {
-    updateCase(merchantId, current.id, { failureCode: data.failureCode || current.failureCode, failureDescription: data.failureDescription || current.failureDescription });
+    current = await updateCase(merchantId, current.id, { failure: { ...current.failure, ...data.failure } });
   }
   return { recovered: false, caseId: current.id, eventId: providerEventId || dedupeKey };
 }
 
 export async function evaluateCase(merchantId, caseId) {
-  const current = getCase(merchantId, caseId);
+  const current = await getCase(merchantId, caseId);
   if (!current) throw new Error('Recovery case not found');
   const policy = evaluatePolicy(current);
   const decision = policy.allowedActions.length ? await recommendRecoveryAction(current, policy.allowedActions) : null;
-  const updated = updateCase(merchantId, caseId, { riskScore: decision?.riskScore ?? current.riskScore, recoverabilityScore: decision?.recoverabilityScore ?? current.recoverabilityScore, ai: decision, explanation: decision?.explanation || policy.reasons.join(', '), state: decision?.recommendedAction === 'wait' ? 'awaiting_window' : decision ? 'planned' : current.state });
+  const updated = await updateCase(merchantId, caseId, { riskScore: decision?.riskScore ?? current.riskScore, recoverabilityScore: decision?.recoverabilityScore ?? current.recoverabilityScore, ai: decision, explanation: decision?.explanation || policy.reasons.join(', '), state: decision?.recommendedAction === 'wait' ? 'awaiting_window' : decision ? 'planned' : current.state });
   await writeAudit({ merchantId, caseId, eventName: 'ai_recovery_decision_created', details: { policy, decision } });
-  return { case: updated, policy, decision, summary: summarize(merchantId) };
+  return { case: updated, policy, decision, summary: await summarize(merchantId) };
 }
