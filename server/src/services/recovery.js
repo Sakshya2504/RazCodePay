@@ -13,17 +13,19 @@ function getRazorpayEntity(payload) {
 function extractCanonicalData(eventType, payload) {
   const entity = getRazorpayEntity(payload);
   const amountMinor = Number(entity.amount || entity.total_amount || 0);
+  const isSubscriptionEvent = eventType.startsWith('subscription.');
+  const isInvoiceEvent = eventType.startsWith('invoice.');
 
   return {
-    type: eventType === 'invoice.issued' || eventType.startsWith('invoice.') ? 'invoice_overdue' : 'failed_subscription',
+    type: isInvoiceEvent ? 'invoice_overdue' : 'failed_subscription',
     amountMinor,
     currency: entity.currency || 'INR',
     customerId: entity.customer_id || null,
     providerEntityId: entity.id || null,
     providerEntityType: eventType.split('.')[0],
     providerOrderId: entity.order_id || payload?.payload?.payment?.entity?.order_id || null,
-    providerSubscriptionId: entity.subscription_id || entity.id && eventType.startsWith('subscription.') ? entity.id : null,
-    providerInvoiceId: entity.invoice_id || entity.id && eventType.startsWith('invoice.') ? entity.id : null,
+    providerSubscriptionId: entity.subscription_id || (isSubscriptionEvent ? entity.id : null),
+    providerInvoiceId: entity.invoice_id || (isInvoiceEvent ? entity.id : null),
     failureCode: entity.error_code || entity.error?.code || null,
     failureDescription: entity.error_description || entity.error?.description || null,
   };
