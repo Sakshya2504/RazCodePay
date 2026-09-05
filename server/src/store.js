@@ -63,7 +63,11 @@ export async function getCase(merchantId, caseId) {
 }
 
 export async function addCase(merchantId, item) {
-  if (memoryMode()) { const value = { ...clone(item), merchantId }; ensureMemory(merchantId).push(value); return clone(value); }
+  if (memoryMode()) {
+    const value = { ...clone(item), id: item.id || `case-live-${randomUUID().slice(0, 8)}`, merchantId };
+    ensureMemory(merchantId).push(value);
+    return clone(value);
+  }
   return normalize(await RecoveryCase.create({ ...clone(item), merchantId }));
 }
 function ensureMemory(merchantId) { if (!memory.has(merchantId)) memory.set(merchantId, merchantId === 'demo-merchant' ? Array.from({ length: 8 }, (_, i) => demoCase(i)) : []); return memory.get(merchantId); }
