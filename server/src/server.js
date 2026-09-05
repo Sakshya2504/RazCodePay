@@ -4,12 +4,12 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import crypto from 'node:crypto';
 import { config, validateConfiguration } from './config.js';
-import { initializeStore } from './store.js';
+import { initializeStore, getRazorpayConnection } from './store.js';
 import { registerApiRoutes } from './routes/api.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerIntegrationRoutes } from './routes/integration.js';
+import { registerPhase2Routes } from './routes/phase2.js';
 import { processVerifiedEvent, createPayloadHash } from './services/recovery.js';
-import { getRazorpayConnection } from './store.js';
 import { decryptSecret } from './services/security.js';
 
 const app = express();
@@ -18,15 +18,13 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({ origin: config.allowedOrigin, credentials: false }));
 app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false }));
 
-app.get('/api/health', (_req, res) => res.json({ service: 'RazCodePay', status: 'ok', track: '03', port: config.port, mode: config.demoMode ? 'demo-safe' : 'production-mongodb', ai: config.aiApiKey ? 'llm-plus-local-model' : 'local-model' }));
+app.get('/api/health', (_req, res) => res.json({ service: 'RazCodePay', status: 'ok', track: '03', port: config.port, mode: config.demoMode ? 'demo-safe' : 'production-mongodb', ai: config.aiApiKey ? 'llm-plus-local-model' : 'local-model', queue: config.redisUrl && !config.demoMode ? 'bullmq' : 'disabled' }));
 
 function safeEqualHex(left, right) {
   if (!left || !right || left.length !== right.length) return false;
   try { return crypto.timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex')); } catch { return false; }
 }
 
-// Each real merchant gets a dedicated webhook URL: /api/webhooks/razorpay/:merchantId.
-// The merchant webhook secret is stored encrypted in MongoDB; the global secret remains a demo fallback.
 app.post('/api/webhooks/razorpay/:merchantId?', express.raw({ type: 'application/json', limit: '1mb' }), async (req, res, next) => {
   try {
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
@@ -58,6 +56,7 @@ app.post('/api/webhooks/razorpay/:merchantId?', express.raw({ type: 'application
 app.use(express.json({ limit: '1mb' }));
 registerAuthRoutes(app);
 registerIntegrationRoutes(app);
+registerPhase2Routes(app);
 registerApiRoutes(app);
 
 app.use((error, _req, res, _next) => {
@@ -75,6 +74,7 @@ async function start() {
     console.log(`Storage → ${storage}`);
     console.log('Razorpay webhook → POST /api/webhooks/razorpay/:merchantId');
     console.log(`AI mode → ${config.aiApiKey ? `LLM (${config.aiModel}) + local model` : 'local recovery model'}`);
+    console.log(`Queue → ${config.redisUrl && !config.demoMode ? 'BullMQ enabled' : 'disabled'}`);
   });
   const shutdown = (signal) => { console.log(`${signal} received. Closing API...`); server.close(() => process.exit(0)); };
   process.on('SIGINT', () => shutdown('SIGINT'));
