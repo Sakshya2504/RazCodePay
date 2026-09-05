@@ -1,61 +1,168 @@
-# 3-minute judge demo
+# Final Judge Demo Script
 
-## 0:00 — Problem
+**Target length:** 4:45–5:00
 
-“Failed payments create revenue leakage. Merchants need the next safe recovery action, not another dashboard.”
+**Recommended format:** real product demo first; use one architecture slide only if needed.
 
-## 0:20 — Open the product
+**Demo environment:** Razorpay Test Mode. Never expose credentials or claim live-money recovery.
 
-Open `http://127.0.0.1:5173`.
+## 0:00–0:25 — Login
 
-Point to revenue at risk, recovered revenue, active cases and expected recoverable value.
+Open the RazCodePay login page.
 
-Say: “This console is connected to Razorpay Test Mode. MongoDB is the application source of truth and Redis/BullMQ handles background recovery work.”
+Say:
 
-## 0:50 — Show a real provider event
+> “This is RazCodePay, an AI-assisted revenue recovery platform for Razorpay merchants. When a payment fails, the merchant needs more than an alert — they need to know what is worth recovering, what to do next, and whether the action actually recovered revenue.”
 
-Open the **Recovery queue**.
+Sign in to the merchant workspace.
 
-Use a Test Mode Payment Link and trigger a failed payment. Razorpay sends `payment.failed` to the public webhook endpoint, which RazCodePay verifies before creating the recovery case.
+## 0:25–0:45 — Merchant identity
 
-Say: “The case is not manually invented in the dashboard. A verified provider event creates it.”
+Show the authenticated command center.
 
-## 1:10 — Show the AI
+Say:
 
-Open **AI decisions** and inspect the new case.
+> “The application is merchant-scoped. Authentication establishes the merchant identity and role, and the workspace loads the merchant’s recovery and integration context.”
 
-Say: “The local-recovery-v2 scorer combines failure profile, event freshness, customer intent, consent, contact reachability, amount opportunity, provider context and prior-attempt pressure.”
+Optionally open the profile menu briefly to show the signed-in merchant identity and sign-out control. Do not spend time on it.
 
-Point out recoverability, risk, expected recovery value, confidence, uncertainty and feature signals.
+## 0:45–1:05 — Razorpay integration
 
-Say: “The optional LLM can add language reasoning, but it cannot escape the already-approved action set.”
+Open **Operations** and show the Razorpay connection status.
 
-## 1:35 — Show the guardrails
+Say:
 
-Open **Guardrails**.
+> “This workspace is connected to Razorpay Test Mode. Provider credentials are protected server-side, the webhook is merchant-specific, and inbound provider events are verified before they can affect recovery state.”
 
-Point out the configurable recovery grace period, quiet hours, attempt cap, automatic-contact cap and human-review threshold.
+Never show the actual key ID, key secret or webhook secret.
 
-Say: “Policy is independent from the model. It is checked before planning and again before the action executes.”
+## 1:05–1:25 — Command Center
 
-## 1:55 — Execute safely
+Open **Command Center**.
 
-Inspect a policy-eligible case with `send_payment_reminder` or `create_payment_link`.
+Point to:
+- Revenue at risk
+- Recovered revenue
+- Active cases
+- Expected recoverable value
+- Recovery funnel
 
-Click **Execute recovery**.
+Say:
 
-Say: “The executor performs a provider-side action with an idempotency key. A successful action is not automatically counted as recovered revenue.”
+> “This is the merchant command center. The important metric is not just transaction volume. We estimate expected recoverable value so operators can focus on the failures with the highest recovery opportunity.”
 
-## 2:15 — Prove the closed loop
+## 1:25–2:05 — Recovery Case
 
-Complete the recovery payment in Razorpay Test Mode.
+Open **Recovery Cases** and inspect the failed Test Mode case.
 
-Razorpay emits a success event such as `payment.captured`. RazCodePay verifies the signed event, matches it to the open recovery case, records the recovery outcome and closes the case.
+Say:
 
-## 2:40 — Provider truth
+> “This case was created from a verified Razorpay failure event. It contains the provider failure context, transaction value, lifecycle state and execution history.”
 
-Say: “Razorpay is the monetary source of truth. Webhook signatures are validated, duplicate events are deduplicated, and only verified provider success can close the case.”
+Point to the failure code, amount, status and customer context.
 
-## 2:55 — Closing line
+Then move to the AI decision card.
 
-“RazCodePay is selective by design: AI recommends, deterministic policy controls, the executor acts, and Razorpay verifies.”
+## 2:05–2:45 — Decision Intelligence
+
+Open **Decision Intelligence** or the case AI panel.
+
+Say:
+
+> “The intelligence layer uses the local-recovery-v2 model. It combines failure profile, recovery type, event freshness, customer intent, consent, contact reachability, amount opportunity, provider context and previous-attempt pressure.”
+
+Point to:
+- recoverability
+- risk
+- confidence
+- uncertainty
+- data quality
+- expected recovery value
+- reason signals
+- model version
+
+Continue:
+
+> “Expected recovery value is an opportunity estimate for prioritization. It is not accounting revenue.”
+
+Then:
+
+> “An optional LLM can add structured reasoning, but it only sees actions already approved by deterministic policy.”
+
+## 2:45–3:20 — Policy & Controls
+
+Open **Policy & Controls**.
+
+Say:
+
+> “The safety layer is independent from the model. Merchants define the recovery window, grace period, quiet hours, maximum attempts, automatic-contact cap and human-review threshold.”
+
+Point to the fail-safe examples.
+
+Say:
+
+> “Missing consent can block contact. Quiet hours can force a wait. High-value or uncertain cases can be routed to a human. Duplicate webhooks are handled idempotently, and invalid signatures are rejected.”
+
+Then deliver the key line:
+
+> “AI recommends. Policy controls.”
+
+## 3:20–4:10 — Execute recovery
+
+Return to the selected eligible case.
+
+If the action is available, click **Execute recovery**.
+
+Say:
+
+> “The executor reloads the current case, re-checks merchant policy, applies an idempotency key, and then performs the approved recovery action.”
+
+For Payment Link recovery:
+
+> “For an eligible case, this can create a Razorpay Payment Link and persist the provider reference.”
+
+Show the execution history/provider reference when available.
+
+### If the case says WAIT
+
+Say:
+
+> “This is intentional. The merchant grace window has not elapsed, so policy is preventing customer-facing action. The system is following the control, not bypassing it.”
+
+Do not force a blocked action just for the recording.
+
+## 4:10–4:35 — Verified provider outcome
+
+Use the available Razorpay Test Mode success path or the clearly marked demo-only success simulator when demonstrating the synthetic path.
+
+Say:
+
+> “The recovery is not counted just because we created a link or sent a message. A verified Razorpay success event is required.”
+
+Point to the case moving to **Recovered** and the attributed recovered amount.
+
+Then:
+
+> “That closes the loop from provider failure to provider-confirmed recovery.”
+
+## 4:35–5:00 — Close
+
+Return to **Command Center**.
+
+Say:
+
+> “RazCodePay combines a React merchant console, Express API, MongoDB as the application source of truth, Redis and BullMQ for background jobs, deterministic recovery intelligence, optional bounded LLM reasoning, merchant guardrails, signed Razorpay webhooks, idempotent execution and provider-grounded recovery attribution.”
+
+Final line:
+
+> “RazCodePay does not just detect failed payments. It identifies what is worth recovering, decides what to do next, acts within merchant-defined boundaries, and proves when revenue actually comes back. AI proposes, policy controls, the executor acts, and Razorpay verifies.”
+
+## Demo discipline
+
+- Use Razorpay Test Mode only.
+- Keep one strong case on screen rather than opening many cases.
+- Never expose environment files, API keys, JWTs, webhook secrets or SMTP passwords.
+- Never describe a recommendation, Payment Link or email as recovered revenue.
+- Do not use the demo reset endpoint in production-oriented mode.
+- If a case is intentionally waiting, explain the policy state.
+- End on the polished Command Center for the final frame.
