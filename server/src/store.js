@@ -7,6 +7,9 @@ import { AuditEvent } from './models/AuditEvent.js';
 import { Merchant } from './models/Merchant.js';
 import { User } from './models/User.js';
 import { RazorpayConnection } from './models/RazorpayConnection.js';
+import { Experiment } from './models/Experiment.js';
+import { RecoveryOutcome } from './models/RecoveryOutcome.js';
+import { CommunicationEvent } from './models/CommunicationEvent.js';
 
 const memory = new Map();
 const memoryEvents = new Set();
@@ -44,7 +47,7 @@ function demoCase(index, overrides = {}) {
 export async function initializeStore() {
   if (memoryMode()) return 'memory';
   await mongoose.connect(config.mongodbUri, { serverSelectionTimeoutMS: 8000, maxPoolSize: 20, autoIndex: true });
-  await Promise.all([Merchant.init(), User.init(), RecoveryCase.init(), WebhookEvent.init(), AuditEvent.init(), RazorpayConnection.init()]);
+  await Promise.all([Merchant.init(), User.init(), RecoveryCase.init(), WebhookEvent.init(), AuditEvent.init(), RazorpayConnection.init(), Experiment.init(), RecoveryOutcome.init(), CommunicationEvent.init()]);
   return 'mongodb';
 }
 
@@ -63,32 +66,19 @@ export async function getCase(merchantId, caseId) {
 }
 
 export async function addCase(merchantId, item) {
-  if (memoryMode()) {
-    const value = { ...clone(item), id: item.id || `case-live-${randomUUID().slice(0, 8)}`, merchantId };
-    ensureMemory(merchantId).push(value);
-    return clone(value);
-  }
+  if (memoryMode()) { const value = { ...clone(item), id: item.id || `case-live-${randomUUID().slice(0, 8)}`, merchantId }; ensureMemory(merchantId).push(value); return clone(value); }
   return normalize(await RecoveryCase.create({ ...clone(item), merchantId }));
 }
 function ensureMemory(merchantId) { if (!memory.has(merchantId)) memory.set(merchantId, merchantId === 'demo-merchant' ? Array.from({ length: 8 }, (_, i) => demoCase(i)) : []); return memory.get(merchantId); }
 
 export async function updateCase(merchantId, caseId, patch) {
-  if (memoryMode()) {
-    const rows = await listCases(merchantId); const target = rows.find((item) => item.id === caseId); if (!target) return null;
-    Object.assign(target, clone(patch), { updatedAt: new Date() }); memory.set(merchantId, rows); return clone(target);
-  }
+  if (memoryMode()) { const rows = await listCases(merchantId); const target = rows.find((item) => item.id === caseId); if (!target) return null; Object.assign(target, clone(patch), { updatedAt: new Date() }); memory.set(merchantId, rows); return clone(target); }
   if (!mongoose.Types.ObjectId.isValid(caseId)) return null;
   return normalize(await RecoveryCase.findOneAndUpdate({ _id: caseId, merchantId }, { $set: clone(patch) }, { new: true }));
 }
 
 export async function resetDemo(merchantId) {
-  const items = Array.from({ length: 60 }, (_, i) => demoCase(i % 8, {
-    caseKey: `demo-batch:${i}`,
-    state: i % 10 === 0 ? 'recovered' : i % 17 === 0 ? 'stopped' : 'planned',
-    amountMinor: [9900, 24900, 49900, 99900, 149900, 249900, 499900, 799900][i % 8],
-    riskScore: Number((0.35 + ((i * 13) % 60) / 100).toFixed(2)), recoverabilityScore: Number((0.45 + ((i * 17) % 50) / 100).toFixed(2)),
-    recoveredAmountMinor: i % 10 === 0 ? [9900, 24900, 49900][i % 3] : 0, closedAt: i % 10 === 0 || i % 17 === 0 ? new Date() : null,
-  }));
+  const items = Array.from({ length: 60 }, (_, i) => demoCase(i % 8, { caseKey: `demo-batch:${i}`, state: i % 10 === 0 ? 'recovered' : i % 17 === 0 ? 'stopped' : 'planned', amountMinor: [9900, 24900, 49900, 99900, 149900, 249900, 499900, 799900][i % 8], riskScore: Number((0.35 + ((i * 13) % 60) / 100).toFixed(2)), recoverabilityScore: Number((0.45 + ((i * 17) % 50) / 100).toFixed(2)), recoveredAmountMinor: i % 10 === 0 ? [9900, 24900, 49900][i % 3] : 0, closedAt: i % 10 === 0 || i % 17 === 0 ? new Date() : null }));
   if (memoryMode()) memory.set(merchantId, items); else { await RecoveryCase.deleteMany({ merchantId }); await RecoveryCase.insertMany(items.map((item) => ({ ...item, merchantId, _id: new mongoose.Types.ObjectId() }))); }
   return listCases(merchantId);
 }
@@ -98,14 +88,8 @@ export async function summarize(merchantId) {
   return { totalCases: cases.length, activeCases: active.length, recoveredCases: recovered.length, stoppedCases: cases.filter((item) => item.state === 'stopped').length, expiredCases: cases.filter((item) => item.state === 'expired').length, revenueAtRiskMinor: active.reduce((sum, item) => sum + item.amountMinor, 0), recoveredRevenueMinor: cases.reduce((sum, item) => sum + (item.recoveredAmountMinor || 0), 0), recoveryRate: cases.length ? recovered.length / cases.length : 0, attempts: cases.reduce((sum, item) => sum + (item.attemptCount || 0), 0), estimatedHoursSaved: Math.round(cases.length * 0.35 * 10) / 10 };
 }
 
-export async function recordEvent(key, value) {
-  if (memoryMode()) { if (memoryEvents.has(key)) return false; memoryEvents.add(key); return true; }
-  try { await WebhookEvent.create(value); return true; } catch (error) { if (error.code === 11000) return false; throw error; }
-}
-export async function markEventStatus(key, status, errorMessage = null) {
-  if (memoryMode()) return;
-  await WebhookEvent.updateOne({ dedupeKey: key }, { $set: { processingStatus: status, ...(errorMessage ? { error: errorMessage } : {}) } });
-}
+export async function recordEvent(key, value) { if (memoryMode()) { if (memoryEvents.has(key)) return false; memoryEvents.add(key); return true; } try { await WebhookEvent.create(value); return true; } catch (error) { if (error.code === 11000) return false; throw error; } }
+export async function markEventStatus(key, status, errorMessage = null) { if (memoryMode()) return; await WebhookEvent.updateOne({ dedupeKey: key }, { $set: { processingStatus: status, ...(errorMessage ? { error: errorMessage } : {}) } }); }
 export async function addAudit(entry) { if (memoryMode()) { memoryAudits.push({ id: randomUUID(), createdAt: new Date(), ...clone(entry) }); return; } await AuditEvent.create(entry); }
 export async function listAudits(merchantId) { if (memoryMode()) return clone(memoryAudits.filter((item) => item.merchantId === merchantId).slice(-100).reverse()); return (await AuditEvent.find({ merchantId }).sort({ createdAt: -1 }).limit(100).lean()).map(normalize); }
 export async function findUserByEmail(email) { if (memoryMode()) return null; return User.findOne({ email: email.toLowerCase() }).select('+passwordHash'); }
@@ -113,5 +97,16 @@ export async function createUser({ name, email, passwordHash, merchantName, slug
 export async function getMerchant(merchantId) { if (memoryMode()) return { id: merchantId, name: 'Demo Merchant', policy: {} }; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return Merchant.findById(merchantId).lean(); }
 export async function saveRazorpayConnection(merchantId, value) { if (memoryMode()) return value; return RazorpayConnection.findOneAndUpdate({ merchantId }, { $set: value }, { upsert: true, new: true }).lean(); }
 export async function getRazorpayConnection(merchantId) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return RazorpayConnection.findOne({ merchantId }); }
+
+export async function createExperiment(merchantId, input) { if (memoryMode()) return { ...input, id: `exp_demo_${randomUUID().slice(0, 6)}`, merchantId, status: 'draft' }; return normalize(await Experiment.create({ ...input, merchantId })); }
+export async function listExperiments(merchantId) { if (memoryMode()) return []; return (await Experiment.find({ merchantId }).sort({ createdAt: -1 }).lean()).map(normalize); }
+export async function updateExperiment(merchantId, experimentId, patch) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(experimentId)) return null; return normalize(await Experiment.findOneAndUpdate({ _id: experimentId, merchantId }, { $set: clone(patch) }, { new: true })); }
+export async function recordRecoveryOutcome(entry) { if (memoryMode()) return { ...entry, id: randomUUID() }; return normalize(await RecoveryOutcome.create(entry)); }
+export async function getExperimentMetrics(merchantId) {
+  if (memoryMode()) return [];
+  return RecoveryOutcome.aggregate([{ $match: { merchantId: new mongoose.Types.ObjectId(merchantId), experimentId: { $ne: null } } }, { $group: { _id: { experimentId: '$experimentId', arm: '$arm' }, cases: { $sum: 1 }, recovered: { $sum: { $cond: [{ $eq: ['$outcome', 'recovered'] }, 1, 0] } }, recoveredAmountMinor: { $sum: '$recoveredAmountMinor' }, avgTimeToRecoveryMinutes: { $avg: '$timeToRecoveryMinutes' } } }, { $sort: { '_id.experimentId': 1, '_id.arm': 1 } }]);
+}
+
+export async function getCommunicationEvents(merchantId, caseId) { if (memoryMode()) return []; if (!mongoose.Types.ObjectId.isValid(merchantId) || !mongoose.Types.ObjectId.isValid(caseId)) return []; return (await CommunicationEvent.find({ merchantId, caseId }).sort({ occurredAt: -1 }).limit(100).lean()).map(normalize); }
 export async function clearStore() { memory.clear(); memoryEvents.clear(); memoryAudits.length = 0; }
 export const resetStore = clearStore;
