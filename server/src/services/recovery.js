@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
-import { addCase, getCase, updateCase, listCases, recordEvent, markEventStatus, summarize, recordRecoveryOutcome } from '../store.js';
+import { addCase, getCase, updateCase, listCases, recordEvent, markEventStatus, summarize, recordRecoveryOutcome, getMerchant } from '../store.js';
 import { evaluatePolicy } from './policy.js';
 import { recommendRecoveryAction } from './decisionEngine.js';
 import { writeAudit } from './audit.js';
 import { enqueueRecoveryJob } from '../queue.js';
+import { listActiveExperiment, pickArm } from './experiments.js';
 
 const FAILURE_EVENTS = new Set(['payment.failed', 'subscription.pending', 'subscription.halted', 'invoice.issued']);
 const SUCCESS_EVENTS = new Set(['payment.captured', 'order.paid', 'subscription.charged', 'invoice.paid', 'payment_link.paid']);
@@ -49,7 +50,12 @@ export async function processVerifiedEvent({ merchantId = 'demo-merchant', event
     let current = cases.find((item) => item.caseKey === caseKey || item.provider?.entityId === data.provider.entityId);
     if (!current) {
       current = await addCase(merchantId, { caseKey, type: data.type, state: 'awaiting_window', amountMinor: data.amountMinor, currency: data.currency, customer: data.customer, provider: data.provider, failure: data.failure, consent: { email: Boolean(data.customer.email), sms: false, whatsapp: false }, attemptCount: 0, attempts: [], riskScore: null, recoverabilityScore: null, ai: null, nextActionAt: new Date(Date.now() + 30 * 60000), recoveredAmountMinor: 0, recoveredProviderId: null, openedAt: new Date() });
-      await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor } });
+      const experiment = await listActiveExperiment(merchantId);
+      if (experiment) {
+        const arm = pickArm(current.id, experiment);
+        current = await updateCase(merchantId, current.id, { experiment: { id: experiment.id, arm: arm.name } });
+      }
+      await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor, experiment: current.experiment || null } });
     } else {
       current = await updateCase(merchantId, current.id, { failure: { ...current.failure, ...data.failure } });
     }
@@ -67,9 +73,26 @@ export async function processVerifiedEvent({ merchantId = 'demo-merchant', event
 export async function evaluateCase(merchantId, caseId) {
   const current = await getCase(merchantId, caseId);
   if (!current) throw new Error('Recovery case not found');
-  const policy = evaluatePolicy(current);
+  const merchant = await getMerchant(merchantId);
+  const policy = evaluatePolicy(current, new Date(), merchant?.policy || {});
   const decision = policy.allowedActions.length ? await recommendRecoveryAction(current, policy.allowedActions) : null;
-  const updated = await updateCase(merchantId, caseId, { riskScore: decision?.riskScore ?? current.riskScore, recoverabilityScore: decision?.recoverabilityScore ?? current.recoverabilityScore, ai: decision, explanation: decision?.explanation || policy.reasons.join(', '), state: decision?.recommendedAction === 'wait' ? 'awaiting_window' : decision ? 'planned' : current.state });
-  await writeAudit({ merchantId, caseId, eventName: 'ai_recovery_decision_created', details: { policy, decision } });
-  return { case: updated, policy, decision, summary: await summarize(merchantId) };
+  let finalDecision = decision;
+  const activeExperiment = current.experiment?.id ? null : await listActiveExperiment(merchantId);
+  let experimentAssignment = current.experiment || null;
+  if (!experimentAssignment && activeExperiment) {
+    const arm = pickArm(current.id, activeExperiment);
+    experimentAssignment = { id: activeExperiment.id, arm: arm.name };
+    await updateCase(merchantId, caseId, { experiment: experimentAssignment });
+    current.experiment = experimentAssignment;
+  }
+  if (experimentAssignment) {
+    const experiment = activeExperiment || (await (await import('../store.js')).listExperiments(merchantId)).find((item) => String(item.id) === String(experimentAssignment.id));
+    const arm = experiment?.arms?.find((item) => item.name === experimentAssignment.arm);
+    if (arm && policy.allowedActions.includes(arm.action)) {
+      finalDecision = { ...(decision || {}), recommendedAction: arm.action, source: `${decision?.source || 'local-model'}+experiment`, experimentId: experiment.id, experimentArm: arm.name, explanation: `${decision?.explanation || 'Policy-eligible recovery decision.'} Treatment arm selected by the active recovery experiment.` };
+    }
+  }
+  const updated = await updateCase(merchantId, caseId, { riskScore: finalDecision?.riskScore ?? current.riskScore, recoverabilityScore: finalDecision?.recoverabilityScore ?? current.recoverabilityScore, ai: finalDecision, explanation: finalDecision?.explanation || policy.reasons.join(', '), state: finalDecision?.recommendedAction === 'wait' ? 'awaiting_window' : finalDecision ? 'planned' : current.state });
+  await writeAudit({ merchantId, caseId, eventName: 'ai_recovery_decision_created', details: { policy, decision: finalDecision, experiment: experimentAssignment } });
+  return { case: updated, policy, decision: finalDecision, summary: await summarize(merchantId) };
 }
