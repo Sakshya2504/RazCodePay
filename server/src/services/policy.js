@@ -11,15 +11,17 @@ const DEFAULT_POLICY = {
 const terminalStates = new Set(['recovered', 'stopped', 'expired']);
 
 export function normalizePolicy(policy = {}) {
+  const quietStart = policy.quietStartHour ?? policy.quietHours?.start;
+  const quietEnd = policy.quietEndHour ?? policy.quietHours?.end;
   return {
     recoveryWindowHours: Number.isFinite(Number(policy.recoveryWindowHours)) ? Number(policy.recoveryWindowHours) : DEFAULT_POLICY.recoveryWindowHours,
     quietHours: {
-      start: Number.isFinite(Number(policy.quietStartHour)) ? Number(policy.quietStartHour) : DEFAULT_POLICY.quietHours.start,
-      end: Number.isFinite(Number(policy.quietEndHour)) ? Number(policy.quietEndHour) : DEFAULT_POLICY.quietHours.end,
+      start: Number.isFinite(Number(quietStart)) ? Number(quietStart) : DEFAULT_POLICY.quietHours.start,
+      end: Number.isFinite(Number(quietEnd)) ? Number(quietEnd) : DEFAULT_POLICY.quietHours.end,
     },
     maxAttemptsPerCase: Number.isFinite(Number(policy.maxAttemptsPerCase)) ? Number(policy.maxAttemptsPerCase) : DEFAULT_POLICY.maxAttemptsPerCase,
     maxAutoContactMinor: Number.isFinite(Number(policy.maxAutoContactMinor)) ? Number(policy.maxAutoContactMinor) : DEFAULT_POLICY.maxAutoContactMinor,
-    approvalRequiredAboveMinor: Number.isFinite(Number(policy.humanApprovalAboveMinor)) ? Number(policy.humanApprovalAboveMinor) : DEFAULT_POLICY.approvalRequiredAboveMinor,
+    approvalRequiredAboveMinor: Number.isFinite(Number(policy.humanApprovalAboveMinor ?? policy.approvalRequiredAboveMinor)) ? Number(policy.humanApprovalAboveMinor ?? policy.approvalRequiredAboveMinor) : DEFAULT_POLICY.approvalRequiredAboveMinor,
     graceMinutes: DEFAULT_POLICY.graceMinutes,
     channels: { ...DEFAULT_POLICY.channels, ...(policy.channels || {}) },
   };
