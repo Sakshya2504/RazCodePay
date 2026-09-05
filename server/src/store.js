@@ -102,6 +102,10 @@ export async function recordEvent(key, value) {
   if (memoryMode()) { if (memoryEvents.has(key)) return false; memoryEvents.add(key); return true; }
   try { await WebhookEvent.create(value); return true; } catch (error) { if (error.code === 11000) return false; throw error; }
 }
+export async function markEventStatus(key, status, errorMessage = null) {
+  if (memoryMode()) return;
+  await WebhookEvent.updateOne({ dedupeKey: key }, { $set: { processingStatus: status, ...(errorMessage ? { error: errorMessage } : {}) } });
+}
 export async function addAudit(entry) { if (memoryMode()) { memoryAudits.push({ id: randomUUID(), createdAt: new Date(), ...clone(entry) }); return; } await AuditEvent.create(entry); }
 export async function listAudits(merchantId) { if (memoryMode()) return clone(memoryAudits.filter((item) => item.merchantId === merchantId).slice(-100).reverse()); return (await AuditEvent.find({ merchantId }).sort({ createdAt: -1 }).limit(100).lean()).map(normalize); }
 export async function findUserByEmail(email) { if (memoryMode()) return null; return User.findOne({ email: email.toLowerCase() }).select('+passwordHash'); }
