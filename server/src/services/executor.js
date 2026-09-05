@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { config } from '../config.js';
 import { getCase, updateCase } from '../store.js';
 import { evaluatePolicy } from './policy.js';
 import { writeAudit } from './audit.js';
@@ -19,11 +20,11 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
 
   let attempt = { action: requestedAction, channel: 'email', status: 'simulated', idempotencyKey, scheduledFor: new Date(), sentAt: new Date() };
 
-  if (requestedAction === 'create_payment_link') {
+  if (requestedAction === 'create_payment_link' && !config.demoMode) {
     const link = await createPaymentLink({ merchantId, amountMinor: current.amountMinor, currency: current.currency, description: `Payment recovery for ${current.type.replaceAll('_', ' ')}`, customer: current.customer, expireBy: new Date(Date.now() + 48 * 3600000), idempotencyKey });
-    attempt = { ...attempt, status: 'created', providerReference: link.id, paymentLink: link.short_url || link.short_url }; 
-  } else if (requestedAction === 'send_payment_reminder') {
-    attempt = { ...attempt, status: 'sent_test_mode', providerReference: `demo-message-${idempotencyKey.slice(0, 12)}` };
+    attempt = { ...attempt, status: 'created', providerReference: link.id, paymentLink: link.short_url || null };
+  } else if (requestedAction === 'send_payment_reminder' || config.demoMode) {
+    attempt = { ...attempt, status: 'test_mode', providerReference: `demo-message-${idempotencyKey.slice(0, 12)}` };
   } else {
     attempt = { ...attempt, status: 'queued_for_operator' };
   }
