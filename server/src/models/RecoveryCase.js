@@ -60,7 +60,8 @@ const recoveryCaseSchema = new mongoose.Schema(
     explanation: { type: String, default: null },
     attempts: { type: [recoveryAttemptSchema], default: [] },
   },
-  { timestamps: true, versionKey: true },
+  // Mongoose expects versionKey to be false or the name of the version field.
+  { timestamps: true, versionKey: '__v' },
 );
 
 recoveryCaseSchema.index({ merchantId: 1, caseKey: 1 }, { unique: true });
