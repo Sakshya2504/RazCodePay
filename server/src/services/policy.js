@@ -22,14 +22,14 @@ export function normalizePolicy(policy = {}) {
     maxAttemptsPerCase: Number.isFinite(Number(policy.maxAttemptsPerCase)) ? Number(policy.maxAttemptsPerCase) : DEFAULT_POLICY.maxAttemptsPerCase,
     maxAutoContactMinor: Number.isFinite(Number(policy.maxAutoContactMinor)) ? Number(policy.maxAutoContactMinor) : DEFAULT_POLICY.maxAutoContactMinor,
     approvalRequiredAboveMinor: Number.isFinite(Number(policy.humanApprovalAboveMinor ?? policy.approvalRequiredAboveMinor)) ? Number(policy.humanApprovalAboveMinor ?? policy.approvalRequiredAboveMinor) : DEFAULT_POLICY.approvalRequiredAboveMinor,
-    graceMinutes: DEFAULT_POLICY.graceMinutes,
+    graceMinutes: Number.isFinite(Number(policy.graceMinutes)) ? Number(policy.graceMinutes) : DEFAULT_POLICY.graceMinutes,
     channels: { ...DEFAULT_POLICY.channels, ...(policy.channels || {}) },
   };
 }
 
 export function validateMerchantPolicy(policy = {}) {
   const next = normalizePolicy(policy);
-  const integerFields = ['recoveryWindowHours', 'maxAttemptsPerCase', 'maxAutoContactMinor', 'approvalRequiredAboveMinor'];
+  const integerFields = ['recoveryWindowHours', 'maxAttemptsPerCase', 'maxAutoContactMinor', 'approvalRequiredAboveMinor', 'graceMinutes'];
   for (const field of integerFields) {
     if (!Number.isFinite(next[field]) || next[field] < 0) throw new Error(`Invalid policy field: ${field}`);
   }
@@ -38,6 +38,7 @@ export function validateMerchantPolicy(policy = {}) {
   if (next.maxAttemptsPerCase > 20) throw new Error('maxAttemptsPerCase cannot exceed 20');
   if (next.maxAutoContactMinor > 100000000) throw new Error('maxAutoContactMinor is too high');
   if (next.approvalRequiredAboveMinor > next.maxAutoContactMinor) throw new Error('humanApprovalAboveMinor must not exceed maxAutoContactMinor');
+  if (next.graceMinutes > 1440) throw new Error('graceMinutes cannot exceed 24 hours');
   return next;
 }
 
