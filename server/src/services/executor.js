@@ -2,34 +2,33 @@ import crypto from 'node:crypto';
 import { getCase, updateCase } from '../store.js';
 import { evaluatePolicy } from './policy.js';
 import { writeAudit } from './audit.js';
+import { createPaymentLink } from './razorpay.js';
 
 export async function executeRecoveryAttempt(merchantId, caseId) {
-  const current = getCase(merchantId, caseId);
+  const current = await getCase(merchantId, caseId);
   if (!current) throw new Error('Recovery case not found');
   if (['recovered', 'stopped', 'expired'].includes(current.state)) throw new Error(`Case is terminal: ${current.state}`);
 
   const policy = evaluatePolicy(current, new Date());
-  if (!policy.allowedActions.includes('send_payment_reminder')) throw new Error(`Policy denied contact: ${policy.reasons.join(', ') || 'not allowed'}`);
+  const requestedAction = current.ai?.recommendation || 'send_payment_reminder';
+  if (!policy.allowedActions.includes(requestedAction)) throw new Error(`Policy denied ${requestedAction}: ${policy.reasons.join(', ') || 'not allowed'}`);
 
   const sequence = (current.attemptCount || 0) + 1;
-  const idempotencyKey = crypto.createHash('sha256').update(`${current.id}:send_payment_reminder:${sequence}`).digest('hex');
+  const idempotencyKey = crypto.createHash('sha256').update(`${caseId}:${requestedAction}:${sequence}`).digest('hex');
   if (current.attempts?.some((attempt) => attempt.idempotencyKey === idempotencyKey)) return { case: current, duplicate: true };
 
-  const attempt = {
-    action: 'send_payment_reminder',
-    channel: 'email',
-    status: 'sent_test_mode',
-    idempotencyKey,
-    scheduledFor: new Date().toISOString(),
-    sentAt: new Date().toISOString(),
-    providerReference: `demo-message-${idempotencyKey.slice(0, 12)}`,
-  };
-  const updated = updateCase(merchantId, caseId, {
-    attemptCount: sequence,
-    attempts: [...(current.attempts || []), attempt],
-    state: 'monitoring',
-    nextActionAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-  });
-  await writeAudit({ merchantId, caseId, eventName: 'recovery_attempt_executed_test_mode', details: attempt });
+  let attempt = { action: requestedAction, channel: 'email', status: 'simulated', idempotencyKey, scheduledFor: new Date(), sentAt: new Date() };
+
+  if (requestedAction === 'create_payment_link') {
+    const link = await createPaymentLink({ merchantId, amountMinor: current.amountMinor, currency: current.currency, description: `Payment recovery for ${current.type.replaceAll('_', ' ')}`, customer: current.customer, expireBy: new Date(Date.now() + 48 * 3600000), idempotencyKey });
+    attempt = { ...attempt, status: 'created', providerReference: link.id, paymentLink: link.short_url || link.short_url }; 
+  } else if (requestedAction === 'send_payment_reminder') {
+    attempt = { ...attempt, status: 'sent_test_mode', providerReference: `demo-message-${idempotencyKey.slice(0, 12)}` };
+  } else {
+    attempt = { ...attempt, status: 'queued_for_operator' };
+  }
+
+  const updated = await updateCase(merchantId, caseId, { attemptCount: sequence, attempts: [...(current.attempts || []), attempt], state: requestedAction === 'create_human_task' ? 'planned' : 'monitoring', nextActionAt: new Date(Date.now() + 24 * 3600000) });
+  await writeAudit({ merchantId, caseId, eventName: 'recovery_action_executed', details: attempt });
   return { case: updated, attempt, duplicate: false };
 }
