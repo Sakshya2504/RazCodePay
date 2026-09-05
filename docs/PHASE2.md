@@ -1,34 +1,32 @@
 # Operations and Advanced Recovery Capabilities
 
-Phase 2 extends the core Track 03 workflow into an operational recovery platform while preserving a strict separation between durable business state and background infrastructure.
+This document describes the operational layer around the core Track 03 recovery workflow.
 
-## 1. Background recovery jobs
+## 1. Background recovery
 
-Redis + BullMQ provides asynchronous execution for recovery evaluation and delayed work.
+Redis + BullMQ handles asynchronous recovery evaluation and delayed/retried work.
 
-Implemented:
+Implemented capabilities:
 
 - dedicated recovery queue
-- delayed jobs
+- delayed evaluation jobs
 - retry/backoff behavior
 - concurrent worker execution
-- queue health endpoint: `GET /api/phase2/queue`
+- queue-health visibility via `GET /api/phase2/queue`
 
-MongoDB remains the source of truth. If Redis is unavailable, the HTTP API can still expose durable application state; queue-backed execution simply becomes unavailable until infrastructure recovers.
+MongoDB remains the durable system of record. Redis is orchestration infrastructure, not business state.
 
 ## 2. Communication adapter
 
 SMTP-backed email delivery is implemented through `server/src/services/mailer.js`.
 
-The system records communication attempts. When SMTP is not configured, it suppresses the outbound send rather than pretending that a customer message was delivered.
+The system records communication attempts. When SMTP is unavailable, the send is suppressed rather than represented as successfully delivered.
 
-This distinction is important for auditability.
+This keeps the audit trail honest.
 
 ## 3. Recovery experiments
 
-Experiments are persisted in MongoDB and can contain treatment/control arms and outcome data.
-
-Endpoints:
+Experiments are persisted in MongoDB and can contain control/treatment arms and outcome data.
 
 ```text
 GET  /api/phase2/experiments
@@ -38,54 +36,58 @@ POST /api/phase2/experiments/:id/stop
 GET  /api/phase2/experiments/metrics
 ```
 
-Assignment is deterministic by case identity so a recovery case stays in the same experiment bucket.
+Assignment is deterministic by case identity so a case remains in the same experiment arm.
 
-## 4. Outcome feedback loop
+## 4. Outcome feedback
 
-Verified recoveries persist the intervention, experiment arm when applicable, recovered amount, recovery timing and model version.
+Verified recovery outcomes record the intervention, experiment arm when applicable, recovered amount, time to recovery and model version.
 
-This creates the data foundation for future calibration and model training. The current repository does not claim that `local-recovery-v2` was trained on a production dataset.
+This creates the foundation for future calibration and training. The current repository does not claim `local-recovery-v2` was trained on proprietary production labels.
 
-## 5. Razorpay OAuth capability
+## 5. Razorpay integration modes
 
-The integration layer contains OAuth authorization-code flow support for a Technology Partner-style deployment, including protected token persistence and refresh handling where configured.
+The current hackathon path uses a merchant-controlled API-key connection in Razorpay Test Mode.
 
-For the current single-merchant hackathon workflow, direct merchant API-key integration in Test Mode is the practical path. A multi-merchant SaaS should use the provider-approved partner/OAuth onboarding model rather than collecting merchant API secrets directly.
+OAuth authorization-code support is retained for a future Technology Partner-style multi-merchant onboarding model. It should not be confused with the current demo's API-key path.
 
 ## 6. Payment Link recovery
 
-Eligible cases can create a real Razorpay Payment Link in provider-connected mode.
+Eligible provider-connected cases can create a real Razorpay Payment Link.
 
-The recovery case stores the provider correlation/reference so subsequent events can be matched. Creating the link does not close the case.
+The recovery case stores provider correlation/reference data so later events can be matched.
 
-Only verified provider success can produce a recovered outcome.
+```text
+Payment Link created ≠ revenue recovered
+```
+
+Only a verified provider-success event closes the monetary loop.
 
 ## 7. Communication history
 
-Communication events are stored in MongoDB and are queryable by recovery case:
+Communication events are stored in MongoDB and are queryable by case:
 
 ```text
 GET /api/phase2/cases/:caseId/communications
 ```
 
-The record distinguishes outbound status and provider references when available.
+The record captures send status and provider references when available.
 
-## 8. Operational controls
+## 8. Merchant operations console
 
-The merchant console exposes:
+The Operations experience exposes:
 
 - Razorpay connection state
-- recovery policy
-- experiment controls
+- merchant recovery policy
+- experiments
 - queue health
 - communication history
-- account/profile state
+- merchant account/profile state
 
-The frontend is not the security boundary; policy and authorization are enforced by the backend.
+The frontend is not the security boundary. Authorization, policy and execution controls are enforced by the backend.
 
-## 9. Environment groups
+## 9. Configuration groups
 
-Core production-oriented configuration:
+Core:
 
 ```env
 DEMO_MODE=false
@@ -95,7 +97,7 @@ JWT_SECRET=...
 ENCRYPTION_KEY=...
 ```
 
-Optional LLM:
+Optional AI:
 
 ```env
 AI_API_KEY=...
@@ -112,7 +114,7 @@ SMTP_PASSWORD=...
 MAIL_FROM=...
 ```
 
-Optional Razorpay OAuth:
+Optional future OAuth:
 
 ```env
 RAZORPAY_OAUTH_CLIENT_ID=...
@@ -120,17 +122,25 @@ RAZORPAY_OAUTH_CLIENT_SECRET=...
 RAZORPAY_OAUTH_REDIRECT_URI=https://<domain>/api/integrations/razorpay/oauth/callback
 ```
 
-## 10. Remaining go-live work
+## 10. What is complete for the buildathon
 
-The buildathon implementation is production-oriented, but a public Live Mode service would still require:
+```text
+Webhook → case → AI score → policy → execution → provider verification
+```
+
+The buildathon artifact also includes queueing, retries, communication auditing, experiments, payment-link correlation, account/profile controls and recovery-outcome persistence.
+
+## 11. Future Live Mode hardening
+
+A public Live Mode service would additionally require:
 
 - managed infrastructure and database backups
 - centralized logs, metrics and alerting
 - production secret management and rotation
-- HTTPS and hardened network configuration
-- messaging delivery/bounce/complaint handling
-- penetration testing and formal security review
+- hardened HTTPS/network configuration
+- messaging delivery, bounce and complaint handling
 - dependency and vulnerability management
+- penetration/security testing
 - model calibration against sufficient real outcomes
-- operational incident/runbook coverage
-- Razorpay Technology Partner/OAuth onboarding for the intended multi-merchant business model
+- incident and recovery runbooks
+- required Razorpay Technology Partner/OAuth onboarding for the intended multi-merchant model
