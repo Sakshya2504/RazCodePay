@@ -14,6 +14,13 @@ const memoryAudits = [];
 const terminal = new Set(['recovered', 'stopped', 'expired']);
 const memoryMode = () => config.demoMode || !config.mongodbUri;
 const clone = (value) => structuredClone(value);
+const normalize = (value) => {
+  if (!value) return null;
+  const output = value.toObject ? value.toObject({ versionKey: false }) : value;
+  if (output._id) output.id = output._id.toString();
+  delete output._id;
+  return clone(output);
+};
 
 function demoCase(index, overrides = {}) {
   const amountMinor = [249900, 499900, 129900, 799900, 199900, 349900, 899900, 159900][index];
@@ -36,7 +43,7 @@ function demoCase(index, overrides = {}) {
 
 export async function initializeStore() {
   if (memoryMode()) return 'memory';
-  await mongoose.connect(config.mongodbUri, { serverSelectionTimeoutMS: 8000, maxPoolSize: 10 });
+  await mongoose.connect(config.mongodbUri, { serverSelectionTimeoutMS: 8000, maxPoolSize: 20, autoIndex: true });
   await Promise.all([Merchant.init(), User.init(), RecoveryCase.init(), WebhookEvent.init(), AuditEvent.init(), RazorpayConnection.init()]);
   return 'mongodb';
 }
@@ -46,19 +53,20 @@ export async function listCases(merchantId) {
     if (!memory.has(merchantId)) memory.set(merchantId, merchantId === 'demo-merchant' ? Array.from({ length: 8 }, (_, i) => demoCase(i)) : []);
     return clone([...memory.get(merchantId)].sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt)));
   }
-  return RecoveryCase.find({ merchantId }).sort({ openedAt: -1 }).limit(200).lean();
+  return (await RecoveryCase.find({ merchantId }).sort({ openedAt: -1 }).limit(200).lean()).map(normalize);
 }
 
 export async function getCase(merchantId, caseId) {
   if (memoryMode()) return clone((await listCases(merchantId)).find((item) => item.id === caseId) || null);
-  const query = mongoose.Types.ObjectId.isValid(caseId) ? { _id: caseId, merchantId } : { merchantId, _id: null };
-  return RecoveryCase.findOne(query).lean();
+  if (!mongoose.Types.ObjectId.isValid(caseId)) return null;
+  return normalize(await RecoveryCase.findOne({ _id: caseId, merchantId }));
 }
 
 export async function addCase(merchantId, item) {
-  if (memoryMode()) { const value = { ...clone(item), merchantId }; const rows = await listCases(merchantId); rows.push(value); memory.set(merchantId, rows); return clone(value); }
-  return RecoveryCase.create({ ...clone(item), merchantId });
+  if (memoryMode()) { const value = { ...clone(item), merchantId }; ensureMemory(merchantId).push(value); return clone(value); }
+  return normalize(await RecoveryCase.create({ ...clone(item), merchantId }));
 }
+function ensureMemory(merchantId) { if (!memory.has(merchantId)) memory.set(merchantId, merchantId === 'demo-merchant' ? Array.from({ length: 8 }, (_, i) => demoCase(i)) : []); return memory.get(merchantId); }
 
 export async function updateCase(merchantId, caseId, patch) {
   if (memoryMode()) {
@@ -66,18 +74,18 @@ export async function updateCase(merchantId, caseId, patch) {
     Object.assign(target, clone(patch), { updatedAt: new Date() }); memory.set(merchantId, rows); return clone(target);
   }
   if (!mongoose.Types.ObjectId.isValid(caseId)) return null;
-  return RecoveryCase.findOneAndUpdate({ _id: caseId, merchantId }, { $set: clone(patch) }, { new: true }).lean();
+  return normalize(await RecoveryCase.findOneAndUpdate({ _id: caseId, merchantId }, { $set: clone(patch) }, { new: true }));
 }
 
 export async function resetDemo(merchantId) {
   const items = Array.from({ length: 60 }, (_, i) => demoCase(i % 8, {
-    id: `demo-${String(i + 1).padStart(3, '0')}`, caseKey: `demo-batch:${i}`,
+    caseKey: `demo-batch:${i}`,
     state: i % 10 === 0 ? 'recovered' : i % 17 === 0 ? 'stopped' : 'planned',
     amountMinor: [9900, 24900, 49900, 99900, 149900, 249900, 499900, 799900][i % 8],
     riskScore: Number((0.35 + ((i * 13) % 60) / 100).toFixed(2)), recoverabilityScore: Number((0.45 + ((i * 17) % 50) / 100).toFixed(2)),
     recoveredAmountMinor: i % 10 === 0 ? [9900, 24900, 49900][i % 3] : 0, closedAt: i % 10 === 0 || i % 17 === 0 ? new Date() : null,
   }));
-  if (memoryMode()) memory.set(merchantId, items); else { await RecoveryCase.deleteMany({ merchantId }); await RecoveryCase.insertMany(items.map((item) => ({ ...item, merchantId }))); }
+  if (memoryMode()) memory.set(merchantId, items); else { await RecoveryCase.deleteMany({ merchantId }); await RecoveryCase.insertMany(items.map((item) => ({ ...item, merchantId, _id: new mongoose.Types.ObjectId() }))); }
   return listCases(merchantId);
 }
 
@@ -91,10 +99,10 @@ export async function recordEvent(key, value) {
   try { await WebhookEvent.create(value); return true; } catch (error) { if (error.code === 11000) return false; throw error; }
 }
 export async function addAudit(entry) { if (memoryMode()) { memoryAudits.push({ id: randomUUID(), createdAt: new Date(), ...clone(entry) }); return; } await AuditEvent.create(entry); }
-export async function listAudits(merchantId) { if (memoryMode()) return clone(memoryAudits.filter((item) => item.merchantId === merchantId).slice(-100).reverse()); return AuditEvent.find({ merchantId }).sort({ createdAt: -1 }).limit(100).lean(); }
-export async function findUserByEmail(email) { return memoryMode() ? null : User.findOne({ email: email.toLowerCase() }).select('+passwordHash'); }
-export async function createUser({ name, email, passwordHash, merchantName, slug }) { const merchant = await Merchant.create({ name: merchantName, slug }); const user = await User.create({ name, email: email.toLowerCase(), passwordHash, merchantId: merchant._id }); return { user, merchant }; }
-export async function saveRazorpayConnection(merchantId, value) { if (memoryMode()) return { ...value }; return RazorpayConnection.findOneAndUpdate({ merchantId }, { $set: value }, { upsert: true, new: true }).lean(); }
-export async function getRazorpayConnection(merchantId) { if (memoryMode()) return null; return RazorpayConnection.findOne({ merchantId }).lean(); }
-export async function resetStore() { memory.clear(); memoryEvents.clear(); memoryAudits.length = 0; if (!memoryMode()) await Promise.all([RecoveryCase.deleteMany({}), WebhookEvent.deleteMany({}), AuditEvent.deleteMany({})]); }
-export { memoryMode };
+export async function listAudits(merchantId) { if (memoryMode()) return clone(memoryAudits.filter((item) => item.merchantId === merchantId).slice(-100).reverse()); return (await AuditEvent.find({ merchantId }).sort({ createdAt: -1 }).limit(100).lean()).map(normalize); }
+export async function findUserByEmail(email) { if (memoryMode()) return null; return User.findOne({ email: email.toLowerCase() }).select('+passwordHash'); }
+export async function createUser({ name, email, passwordHash, merchantName, slug }) { if (memoryMode()) throw new Error('Registration requires MongoDB and DEMO_MODE=false.'); const merchant = await Merchant.create({ name: merchantName, slug }); const user = await User.create({ name, email: email.toLowerCase(), passwordHash, merchantId: merchant._id }); return { user, merchant }; }
+export async function getMerchant(merchantId) { if (memoryMode()) return { id: merchantId, name: 'Demo Merchant', policy: {} }; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return Merchant.findById(merchantId).lean(); }
+export async function saveRazorpayConnection(merchantId, value) { if (memoryMode()) return value; return RazorpayConnection.findOneAndUpdate({ merchantId }, { $set: value }, { upsert: true, new: true }).lean(); }
+export async function getRazorpayConnection(merchantId) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return RazorpayConnection.findOne({ merchantId }); }
+export async function clearStore() { memory.clear(); memoryEvents.clear(); memoryAudits.length = 0; }
