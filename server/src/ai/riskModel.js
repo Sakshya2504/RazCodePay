@@ -129,6 +129,7 @@ export function scoreRecoveryPotential(caseData, now = new Date()) {
     uncertainty: round(uncertainty),
     dataQuality: round(dataQuality),
     expectedRecoveryMinor,
+    customerIntent: f.customerIntent,
     modelVersion: MODEL_VERSION,
     features: f,
     signals,
