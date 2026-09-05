@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { createExperiment, listExperiments, updateExperiment, getExperimentMetrics } from '../store.js';
+import { createExperiment, listExperiments as loadExperiments, updateExperiment, getExperimentMetrics } from '../store.js';
 
 export function pickArm(caseId, experiment) {
   if (!experiment?.arms?.length || experiment.status !== 'running') return null;
@@ -10,6 +10,10 @@ export function pickArm(caseId, experiment) {
     if (bucket <= cursor) return arm;
   }
   return experiment.arms[experiment.arms.length - 1];
+}
+
+export async function listExperiments(merchantId) {
+  return loadExperiments(merchantId);
 }
 
 export async function listActiveExperiment(merchantId) {
