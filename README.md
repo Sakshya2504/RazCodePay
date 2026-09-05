@@ -1,106 +1,68 @@
-# RazCodePay
+# RazCodePay — AI Revenue Recovery
 
-**Razorpay AI Buildathon — Track 03: AI Revenue Recovery**
+Razorpay AI Buildathon · Track 03
 
-RazCodePay is an AI-assisted revenue recovery control plane for merchants. It detects payment-related revenue at risk, uses deterministic policy to define the safe action space, lets an AI model rank those allowed actions, and records the complete recovery journey.
+RazCodePay is an AI-assisted revenue recovery control plane. It turns failed or overdue payment signals into bounded recovery decisions, executes only policy-approved actions, and closes recovery only after a verified provider success event.
 
-> **Important:** the project runs in Razorpay Test Mode for the buildathon. Synthetic demo data is never represented as real merchant revenue.
+## What makes the project selectable
 
-## Current stack
+**AI is visible, not decorative.** Every case has an interpretable recovery score, ranked signals, a confidence value, recommended action, and reason codes. When `AI_API_KEY` is present, an LLM adds a second reasoning layer. The LLM can only choose from the deterministic policy allow-list.
 
-- **Frontend:** React.js, HTML, CSS, Vite
-- **Backend:** Node.js, Express.js
-- **Database:** MongoDB with Mongoose
-- **AI/ML:** Python, Pandas, NumPy, Scikit-learn
-- **AI reasoning:** optional LLM API with a deterministic fallback
-- **Payment integration:** Razorpay Test APIs and signed webhooks
-- **Version control:** Git + GitHub
+**The demo is hard to break.** The backend runs on port `3000` without requiring MongoDB, Razorpay credentials, or an LLM key. The frontend runs on `5173`. This means a judge can clone, install, and open the dashboard immediately.
+
+**Automation has brakes.** Consent, quiet hours, attempt caps, monetary thresholds, terminal-state checks, webhook signature verification, and idempotency are all handled outside the AI layer.
+
+**The money metric is provider-grounded.** The UI never claims a message caused recovery. A case is marked recovered only when a matching Razorpay success event is processed.
 
 ## Architecture
 
-The system follows the documented `detect → diagnose → choose → execute → verify → measure` loop.
-
 ```text
-Razorpay webhook
-      ↓
-Signature verification
-      ↓
-MongoDB immutable event record
-      ↓
-Recovery case creation / correlation
-      ↓
-Deterministic policy gate
-      ↓
-AI recommendation (bounded to allowed actions)
-      ↓
-Guarded test-mode executor
-      ↓
-Later Razorpay success event
-      ↓
-Verified recovery attribution + audit trail
-      ↓
-React merchant console
+Razorpay Webhook
+      │ signed + verified
+      ▼
+Event Normalizer ────────► Immutable event/audit trail
+      │
+      ▼
+Recovery Case
+      │
+      ├── deterministic policy pre-filter
+      │
+      ├── local AI recovery model
+      │       └── optional LLM reasoning
+      │
+      └── deterministic policy re-check
+              │
+              ▼
+       Test-mode executor
+              │
+              ▼
+     customer/provider signal
+              │
+              ▼
+      verified Razorpay success
+              │
+              ▼
+         Case = recovered
 ```
 
-See [`architecture.md`](./architecture.md) for the complete design, state machine, data model, safety rules, measurement plan, testing strategy, and buildathon demo checklist.
+## Local run
 
-## Project structure
-
-```text
-RazCodePay/
-├── architecture.md
-├── README.md
-├── ml/
-│   ├── requirements.txt
-│   └── risk_scorer.py
-├── server/
-│   ├── .env.example
-│   ├── package.json
-│   └── src/
-│       ├── config.js
-│       ├── db.js
-│       ├── models/
-│       │   ├── AuditLog.js
-│       │   ├── IncomingEvent.js
-│       │   └── RecoveryCase.js
-│       ├── routes/
-│       │   ├── cases.js
-│       │   ├── demo.js
-│       │   └── webhooks.js
-│       ├── services/
-│       │   ├── audit.js
-│       │   ├── decisionEngine.js
-│       │   ├── executor.js
-│       │   ├── policy.js
-│       │   └── recovery.js
-│       └── server.js
-└── web/
-    ├── index.html
-    ├── package.json
-    └── src/
-        ├── App.jsx
-        ├── main.jsx
-        └── styles.css
-```
-
-## Run locally
-
-### 1. Start MongoDB
-
-Use a local MongoDB instance or a MongoDB Atlas development database.
-
-### 2. Start the API
+### 1. Backend
 
 ```bash
 cd server
 npm install
-cp .env.example .env
+copy .env.example .env
 npm run dev
 ```
 
-The API listens on `http://localhost:5000` by default.
+Backend: `http://127.0.0.1:3000`
 
-### 3. Start the React console
+Health check: `http://127.0.0.1:3000/api/health`
+
+### 2. Frontend
+
+Open a second terminal:
 
 ```bash
 cd web
@@ -108,55 +70,111 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL shown in the terminal, normally `http://localhost:5173`.
+Frontend: `http://127.0.0.1:5173`
 
-### 4. Load the demo batch
+The Vite server is explicitly configured for `5173`; the API defaults to `3000`.
 
-Click **Seed Demo Batch** in the dashboard. This creates 60 synthetic recovery cases covering active, recovered, and stopped states.
+## Demo flow
 
-## Razorpay webhook setup
+1. Open the dashboard.
+2. Open **AI decisions** to see the ranked recovery opportunities and model logic.
+3. Open **Recovery queue** and inspect a case.
+4. Click **Inspect**. The API runs the AI decision and policy evaluation.
+5. For an allowed case, run **Run test-mode reminder**. The event is recorded with an idempotency key.
+6. Send a verified Razorpay `payment.captured` or `order.paid` webhook to demonstrate the final recovery transition.
+7. Open **Guardrails** to show the hard business boundaries.
+8. Click **Reset demo cohort** to restore a fresh 60-case cohort.
 
-Set these values in `server/.env`:
+## Optional AI upgrade
 
-```env
-RAZORPAY_KEY_ID=...
-RAZORPAY_KEY_SECRET=...
-RAZORPAY_WEBHOOK_SECRET=...
-```
+Set `AI_API_KEY` in `server/.env`. RazCodePay will use the local model to establish the numeric baseline and the configured LLM to add bounded reasoning. If the LLM is unavailable, the local model continues working without changing the safety policy.
 
-Expose the local API using an HTTPS tunnel when configuring a provider webhook. The endpoint is:
+## Optional MongoDB
+
+Set `MONGODB_URI` to enable MongoDB connectivity for future persistence work. The current demo intentionally keeps the operational path independent from MongoDB so setup failures cannot make the dashboard blank.
+
+## Razorpay Test Mode
+
+The webhook endpoint is:
 
 ```text
 POST /api/webhooks/razorpay
 ```
 
-The request must contain Razorpay's signature header. RazCodePay verifies the signature against the **raw request bytes before JSON parsing** and deduplicates provider retries.
+Required header for a signed event:
 
-## Safety boundary
+```text
+X-Razorpay-Signature: <hmac-sha256-of-raw-body>
+```
 
-The design intentionally prevents the AI from becoming a money-moving authority:
+Optional event de-duplication header:
 
-1. Razorpay remains the monetary source of truth.
-2. Policy code defines the actions that are allowed.
-3. The AI can only select from that allow-list.
-4. The executor re-checks terminal state, consent, amount caps, and idempotency before acting.
-5. Only a later verified Razorpay success can mark recovered revenue.
-6. Test-mode execution records a synthetic outbound attempt instead of contacting a real customer.
+```text
+x-razorpay-event-id: <unique-event-id>
+```
 
-## Demo metrics
+Razorpay documents HMAC-SHA256 validation over the **raw webhook request body** and recommends de-duplicating using `x-razorpay-event-id`. The implementation follows that pattern. citeturn540502search2turn540502search0
 
-The dashboard reports:
+Useful Track 03 events include `payment.failed` and `payment.captured`; Razorpay also documents `order.paid` as the paid-order event. citeturn540502search1
 
-- revenue at risk;
-- verified recovered revenue;
-- recovery rate;
-- active cases;
-- risk and recoverability scores;
-- case state and decision explanation;
-- stopping and guardrail status.
+## API map
 
-The batch is reproducible and deliberately synthetic so every number can be explained to judges.
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/health` | API health and operating mode |
+| `GET /api/dashboard` | Summary, cases, and current policy |
+| `GET /api/cases` | Recovery queue |
+| `GET /api/cases/:id` | One case |
+| `POST /api/cases/:id/evaluate` | Run policy + AI decision |
+| `POST /api/cases/:id/execute` | Record a test-mode outbound attempt |
+| `POST /api/cases/:id/stop` | Merchant stop |
+| `POST /api/demo/reset` | Create 60 synthetic cases |
+| `GET /api/policy` | Current guardrails |
+| `GET /api/audit` | Recent audit entries |
+| `POST /api/webhooks/razorpay` | Signed provider events |
 
-## Code readability standard
+## Repository layout
 
-Code is organized by responsibility rather than by large route files. Comments explain **why** a control exists, not what a self-explanatory line does. Shared configuration is centralised, external side effects are isolated, and safety-sensitive paths fail closed.
+```text
+RazCodePay/
+├─ architecture.md
+├─ docs/
+│  ├─ AI.md
+│  ├─ API.md
+│  └─ DEMO_SCRIPT.md
+├─ ml/
+├─ server/
+│  ├─ src/
+│  │  ├─ ai/riskModel.js
+│  │  ├─ routes/api.js
+│  │  ├─ services/
+│  │  │  ├─ audit.js
+│  │  │  ├─ decisionEngine.js
+│  │  │  ├─ executor.js
+│  │  │  ├─ policy.js
+│  │  │  └─ recovery.js
+│  │  ├─ store.js
+│  │  └─ server.js
+│  └─ test/
+└─ web/
+   ├─ src/App.jsx
+   ├─ src/main.jsx
+   ├─ src/styles.css
+   └─ vite.config.js
+```
+
+## Validation checklist
+
+- Backend defaults to `3000`.
+- Frontend defaults to `5173`.
+- Frontend never requires MongoDB merely to render.
+- AI recommendations are allow-list constrained.
+- Execution re-checks policy at action time.
+- Provider success is the only recovery confirmation path.
+- Webhook signatures use raw request bytes.
+- Duplicate provider events are idempotent.
+- Tests cover policy boundaries and AI bounds.
+
+## Scope note
+
+This repository is a buildathon-grade reference implementation. The test-mode executor records a synthetic outbound action instead of sending real customer communications. Production deployment still needs authentication/RBAC, durable persistence, secret management, observability, and a real messaging provider adapter.

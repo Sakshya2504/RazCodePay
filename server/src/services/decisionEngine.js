@@ -1,110 +1,93 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
+import { scoreRecoveryPotential } from '../ai/riskModel.js';
 
-const ACTIONS = [
-  'wait',
-  'send_payment_reminder',
-  'request_payment_method_update',
-  'create_human_task',
-  'stop_case',
-];
+const ACTIONS = ['wait', 'send_payment_reminder', 'request_payment_method_update', 'create_human_task', 'stop_case'];
 
-function deterministicDecision(caseData, allowedActions) {
-  if (allowedActions.includes('send_payment_reminder') && caseData.consent?.email) {
-    return {
-      recommendedAction: 'send_payment_reminder',
-      channel: 'email',
-      templateId: 'payment_recovery_v1',
-      reasonCodes: ['recoverable_signal', 'email_consent', 'policy_allowed'],
-      confidence: 0.72,
-      requiresHumanReview: false,
-      source: 'deterministic_fallback',
-    };
-  }
+function localDecision(caseData, allowedActions, now = new Date()) {
+  const model = scoreRecoveryPotential(caseData, now);
+  const safe = ACTIONS.filter((action) => allowedActions.includes(action));
+  const highValue = caseData.amountMinor > 100000;
 
-  if (allowedActions.includes('create_human_task')) {
-    return {
-      recommendedAction: 'create_human_task',
-      channel: null,
-      templateId: null,
-      reasonCodes: ['automation_boundary_reached'],
-      confidence: 0.98,
-      requiresHumanReview: true,
-      source: 'deterministic_fallback',
-    };
-  }
+  let recommendation = 'wait';
+  if (safe.includes('create_human_task') && (highValue || model.recoverabilityScore < 0.45)) recommendation = 'create_human_task';
+  else if (safe.includes('send_payment_reminder') && model.recoverabilityScore >= 0.58) recommendation = 'send_payment_reminder';
+  else if (safe.includes('request_payment_method_update')) recommendation = 'request_payment_method_update';
+  else if (safe.includes('stop_case')) recommendation = 'stop_case';
+
+  const reasons = model.signals
+    .filter((signal) => signal.direction === 'positive')
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 3)
+    .map((signal) => `${signal.label.replaceAll(' ', '_')}_positive`);
 
   return {
-    recommendedAction: 'wait',
-    channel: null,
-    templateId: null,
-    reasonCodes: ['no_contact_action_allowed'],
-    confidence: 0.99,
-    requiresHumanReview: false,
-    source: 'deterministic_fallback',
+    recommendedAction: safe.includes(recommendation) ? recommendation : 'wait',
+    channel: recommendation === 'send_payment_reminder' ? 'email' : null,
+    confidence: Number(Math.max(0.62, Math.min(0.96, 0.62 + Math.abs(model.recoverabilityScore - 0.5) * 0.65)).toFixed(2)),
+    reasonCodes: reasons.length ? reasons : ['policy_bounded_decision'],
+    explanation: recommendation === 'create_human_task'
+      ? 'The model sees enough value or uncertainty that a human should approve the next step.'
+      : recommendation === 'send_payment_reminder'
+        ? 'The case has strong recovery signals and customer contact is policy-approved.'
+        : 'No customer-facing action is justified yet; the case should wait or be reviewed.',
+    source: 'local-model',
+    modelVersion: model.modelVersion,
+    riskScore: model.riskScore,
+    recoverabilityScore: model.recoverabilityScore,
+    signals: model.signals,
   };
 }
 
-/**
- * AI never gets provider credentials and never executes a side effect. It can
- * only choose from the action set that policy has already approved.
- */
 export async function recommendRecoveryAction(caseData, allowedActions) {
-  const safeActions = ACTIONS.filter((action) => allowedActions.includes(action));
+  const safe = ACTIONS.filter((action) => allowedActions.includes(action));
+  const baseline = localDecision(caseData, safe);
 
-  if (!config.aiApiKey || safeActions.length === 0) {
-    return deterministicDecision(caseData, safeActions);
-  }
+  if (!config.aiApiKey || safe.length === 0) return baseline;
 
   const client = new OpenAI({ apiKey: config.aiApiKey });
   const context = {
-    type: caseData.type,
+    caseType: caseData.type,
     amountMinor: caseData.amountMinor,
     currency: caseData.currency,
     failureCode: caseData.failureCode,
     failureDescription: caseData.failureDescription,
     attemptCount: caseData.attemptCount,
     consent: caseData.consent,
-    allowedActions: safeActions,
+    riskScore: baseline.riskScore,
+    recoverabilityScore: baseline.recoverabilityScore,
+    allowedActions: safe,
   };
 
   try {
     const response = await client.chat.completions.create({
       model: config.aiModel,
-      temperature: 0.1,
+      temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
         {
           role: 'system',
-          content:
-            'You are a payment recovery decision assistant. Choose only one action from allowedActions. Never invent actions, discounts, payment instructions, deadlines, or provider operations. Return JSON only.',
+          content: 'You are a payment recovery analyst. Choose exactly one action from allowedActions. Never invent discounts, payment links, deadlines, or provider operations. Explain the choice using only the supplied facts. Return JSON with recommendedAction, confidence, reasonCodes, and explanation.',
         },
-        {
-          role: 'user',
-          content: JSON.stringify(context),
-        },
+        { role: 'user', content: JSON.stringify(context) },
       ],
     });
 
-    const raw = response.choices?.[0]?.message?.content || '';
-    const parsed = JSON.parse(raw);
-    const valid = safeActions.includes(parsed.recommendedAction);
-
-    if (!valid) {
-      return deterministicDecision(caseData, safeActions);
-    }
+    const parsed = JSON.parse(response.choices?.[0]?.message?.content || '{}');
+    if (!safe.includes(parsed.recommendedAction)) return baseline;
 
     return {
+      ...baseline,
       recommendedAction: parsed.recommendedAction,
       channel: parsed.recommendedAction === 'send_payment_reminder' ? 'email' : null,
-      templateId: parsed.recommendedAction === 'send_payment_reminder' ? 'payment_recovery_v1' : null,
-      reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.slice(0, 5) : ['ai_recommendation'],
-      confidence: Math.min(1, Math.max(0, Number(parsed.confidence) || 0.5)),
-      requiresHumanReview: parsed.recommendedAction === 'create_human_task',
-      source: 'llm',
+      confidence: Math.min(0.99, Math.max(0, Number(parsed.confidence) || baseline.confidence)),
+      reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.slice(0, 5) : baseline.reasonCodes,
+      explanation: typeof parsed.explanation === 'string' ? parsed.explanation.slice(0, 500) : baseline.explanation,
+      source: 'openai-llm',
+      modelVersion: config.aiModel,
     };
   } catch (error) {
-    console.warn(`AI decision failed; using deterministic fallback: ${error.message}`);
-    return deterministicDecision(caseData, safeActions);
+    console.warn(`LLM unavailable; local model retained: ${error.message}`);
+    return baseline;
   }
 }

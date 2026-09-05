@@ -1,95 +1,62 @@
-import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import mongoose from 'mongoose';
+import crypto from 'node:crypto';
 import { config, validateConfiguration } from './config.js';
-import { connectDatabase } from './db.js';
-import { registerWebhookRoutes } from './routes/webhooks.js';
-import { registerCaseRoutes } from './routes/cases.js';
-import { registerDemoRoutes } from './routes/demo.js';
-import { startRecoveryWorker, stopRecoveryWorker } from './worker.js';
-import { RecoveryCase } from './models/RecoveryCase.js';
+import { registerApiRoutes } from './routes/api.js';
+import { processVerifiedEvent, createPayloadHash } from './services/recovery.js';
 
 const app = express();
-
 app.disable('x-powered-by');
 app.use(cors({ origin: config.allowedOrigin }));
+app.get('/api/health', (_req, res) => res.json({ service: 'RazCodePay', status: 'ok', track: '03', port: config.port, mode: config.demoMode ? 'demo-safe' : 'configured' }));
 
-// Webhooks must receive the exact bytes Razorpay signed. JSON parsing happens later.
-app.use('/api/webhooks/razorpay', express.raw({ type: 'application/json', limit: '1mb' }));
-app.use(express.json({ limit: '1mb' }));
+function timingSafeEqualHex(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  try { return crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); } catch { return false; }
+}
 
-app.get('/api/health', (_req, res) => {
-  res.json({
-    service: 'RazCodePay Recovery API',
-    status: 'ok',
-    track: '03',
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    worker: 'running',
-  });
-});
-
-app.get('/api/recovery/summary', async (req, res, next) => {
+app.post('/api/webhooks/razorpay', express.raw({ type: 'application/json', limit: '1mb' }), async (req, res, next) => {
   try {
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+    const signature = req.get('X-Razorpay-Signature') || '';
+    const eventId = req.get('x-razorpay-event-id') || '';
     const merchantId = req.get('X-RazCodePay-Merchant-Id') || 'demo-merchant';
-    const [summary] = await RecoveryCase.aggregate([
-      { $match: { merchantId } },
-      {
-        $group: {
-          _id: null,
-          revenueAtRisk: { $sum: { $cond: [{ $ne: ['$state', 'recovered'] }, '$amountMinor', 0] } },
-          recoveredRevenue: { $sum: '$recoveredAmountMinor' },
-          totalCases: { $sum: 1 },
-          openCases: { $sum: { $cond: [{ $in: ['$state', ['detected', 'enriched', 'awaiting_window', 'planned', 'executing', 'monitoring']] }, 1, 0] } },
-          recoveredCases: { $sum: { $cond: [{ $eq: ['$state', 'recovered'] }, 1, 0] } },
-        },
-      },
-    ]);
 
-    const data = summary || { revenueAtRisk: 0, recoveredRevenue: 0, totalCases: 0, openCases: 0, recoveredCases: 0 };
-    return res.json({
-      revenueAtRisk: data.revenueAtRisk,
-      recoveredRevenue: data.recoveredRevenue,
-      recoveryRate: data.totalCases ? data.recoveredCases / data.totalCases : 0,
-      openCases: data.openCases,
-      totalCases: data.totalCases,
-    });
+    if (!config.razorpayWebhookSecret) return res.status(503).json({ error: 'Webhook secret is not configured in this environment.' });
+    const expected = crypto.createHmac('sha256', config.razorpayWebhookSecret).update(rawBody).digest('hex');
+    if (!timingSafeEqualHex(expected, signature)) return res.status(401).json({ error: 'Invalid webhook signature.' });
+
+    const payload = JSON.parse(rawBody.toString('utf8'));
+    const eventType = payload.event;
+    if (!eventType) return res.status(400).json({ error: 'Webhook event is missing.' });
+
+    const dedupeKey = eventId || `${eventType}:${createPayloadHash(rawBody)}`;
+    const result = await processVerifiedEvent({ merchantId, eventType, providerEventId: eventId, payload, dedupeKey, payloadSha256: createPayloadHash(rawBody) });
+    return res.status(result.duplicate ? 200 : 202).json(result);
   } catch (error) {
     return next(error);
   }
 });
 
-registerWebhookRoutes(app);
-registerCaseRoutes(app);
-registerDemoRoutes(app);
+app.use(express.json({ limit: '1mb' }));
+registerApiRoutes(app);
 
 app.use((error, _req, res, _next) => {
-  console.error('Unhandled API error:', error.message);
-  res.status(500).json({ error: 'Internal server error' });
+  console.error('[API]', error);
+  res.status(500).json({ error: 'Internal server error', message: config.demoMode ? error.message : undefined });
 });
 
-async function start() {
-  const warnings = validateConfiguration();
-  warnings.forEach((warning) => console.warn(`Configuration warning: ${warning}`));
+for (const warning of validateConfiguration()) console.warn(`[config] ${warning}`);
 
-  await connectDatabase();
-  app.listen(config.port, () => {
-    console.log(`RazCodePay Recovery API running on port ${config.port}`);
-  });
-  startRecoveryWorker();
-}
-
-start().catch((error) => {
-  console.error('Server startup failed:', error);
-  process.exit(1);
+const server = app.listen(config.port, config.host, () => {
+  console.log(`RazCodePay backend → http://${config.host}:${config.port}`);
+  console.log('Razorpay webhook → POST /api/webhooks/razorpay');
+  console.log(`AI mode → ${config.aiApiKey ? `LLM (${config.aiModel}) + local guardrail model` : 'local recovery model (no API key required)'}`);
 });
 
-async function shutdown(signal) {
-  console.log(`${signal} received. Shutting down cleanly...`);
-  stopRecoveryWorker();
-  await mongoose.disconnect();
-  process.exit(0);
+function shutdown(signal) {
+  console.log(`${signal} received. Closing API...`);
+  server.close(() => process.exit(0));
 }
-
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

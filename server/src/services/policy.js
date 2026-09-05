@@ -1,70 +1,60 @@
-const DEFAULT_POLICY = {
+const POLICY = {
   recoveryWindowHours: 168,
   quietHours: { start: 21, end: 9 },
   maxAttemptsPerCase: 2,
-  maxAttemptsPerCustomer7d: 3,
   maxAutoContactMinor: 500000,
   approvalRequiredAboveMinor: 100000,
   graceMinutes: 30,
-  allowedActions: [
-    'wait',
-    'send_payment_reminder',
-    'request_payment_method_update',
-    'create_human_task',
-    'stop_case',
-  ],
   channels: { email: true, sms: false, whatsapp: false },
 };
 
-/**
- * The policy engine is deliberately boring. Financial and consent boundaries
- * should be deterministic and reviewable rather than hidden inside an AI call.
- */
+const terminalStates = new Set(['recovered', 'stopped', 'expired']);
+
 export function evaluatePolicy(caseData, now = new Date()) {
-  const policy = DEFAULT_POLICY;
+  const allowed = new Set(['wait', 'send_payment_reminder', 'request_payment_method_update', 'create_human_task', 'stop_case']);
   const reasons = [];
-  const allowedActions = new Set(policy.allowedActions);
 
-  if (caseData.state === 'recovered' || caseData.state === 'stopped' || caseData.state === 'expired') {
-    return { allowedActions: [], reasons: ['terminal_case'] };
+  if (terminalStates.has(caseData.state)) return { allowedActions: [], reasons: ['terminal_case'] };
+
+  const ageHours = Math.max(0, (now - new Date(caseData.openedAt || now)) / 36e5);
+  if (ageHours > POLICY.recoveryWindowHours) {
+    return { allowedActions: ['stop_case'], reasons: ['recovery_window_expired'] };
   }
 
-  if (caseData.amountMinor > policy.maxAutoContactMinor) {
-    allowedActions.delete('send_payment_reminder');
-    reasons.push('amount_above_automatic_contact_cap');
-  }
-
-  if (caseData.attemptCount >= policy.maxAttemptsPerCase) {
-    allowedActions.delete('send_payment_reminder');
-    allowedActions.add('create_human_task');
+  if ((caseData.attemptCount || 0) >= POLICY.maxAttemptsPerCase) {
+    allowed.delete('send_payment_reminder');
+    allowed.add('create_human_task');
     reasons.push('maximum_case_attempts_reached');
   }
 
-  const hour = now.getHours();
-  const isQuiet = hour >= policy.quietHours.start || hour < policy.quietHours.end;
-  if (isQuiet) {
-    allowedActions.delete('send_payment_reminder');
-    reasons.push('merchant_quiet_hours');
-  }
-
   if (!caseData.consent?.email) {
-    allowedActions.delete('send_payment_reminder');
+    allowed.delete('send_payment_reminder');
     reasons.push('email_consent_missing');
   }
 
+  const hour = now.getHours();
+  if (hour >= POLICY.quietHours.start || hour < POLICY.quietHours.end) {
+    allowed.delete('send_payment_reminder');
+    reasons.push('merchant_quiet_hours');
+  }
+
+  if (caseData.amountMinor > POLICY.maxAutoContactMinor) {
+    allowed.delete('send_payment_reminder');
+    allowed.add('create_human_task');
+    reasons.push('automatic_contact_cap_exceeded');
+  } else if (caseData.amountMinor > POLICY.approvalRequiredAboveMinor) {
+    allowed.delete('send_payment_reminder');
+    allowed.add('create_human_task');
+    reasons.push('human_approval_threshold');
+  }
+
   if (caseData.nextActionAt && new Date(caseData.nextActionAt) > now) {
-    return { allowedActions: [], reasons: ['recovery_window_not_reached'] };
+    return { allowedActions: ['wait', ...[...allowed].filter((action) => action === 'stop_case')], reasons: [...reasons, 'next_action_not_due'] };
   }
 
-  if (caseData.amountMinor > policy.approvalRequiredAboveMinor) {
-    allowedActions.delete('send_payment_reminder');
-    allowedActions.add('create_human_task');
-    reasons.push('amount_requires_human_approval');
-  }
-
-  return { allowedActions: [...allowedActions], reasons };
+  return { allowedActions: [...allowed], reasons };
 }
 
-export function getDefaultPolicy() {
-  return structuredClone(DEFAULT_POLICY);
+export function getPolicy() {
+  return structuredClone(POLICY);
 }
