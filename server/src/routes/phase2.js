@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { config } from '../config.js';
 import { requireAuth, requireRole } from '../services/security.js';
 import { createRecoveryExperiment, listActiveExperiment, listExperiments, metrics, startExperiment, stopExperiment } from '../services/experiments.js';
 import { getCommunicationEvents } from '../store.js';
@@ -7,7 +8,7 @@ import { getRecoveryQueue } from '../queue.js';
 export function registerPhase2Routes(app) {
   const router = Router();
   router.use(requireAuth);
-  const merchantId = (req) => req.auth.merchantId;
+  const merchantId = (req) => config.demoMode ? (req.get('X-RazCodePay-Merchant-Id') || 'demo-merchant') : req.auth.merchantId;
 
   router.get('/experiments', async (req, res, next) => { try { return res.json({ experiments: await listExperiments(merchantId(req)), active: await listActiveExperiment(merchantId(req)) }); } catch (e) { return next(e); } });
   router.post('/experiments', requireRole('owner', 'admin'), async (req, res, next) => {
