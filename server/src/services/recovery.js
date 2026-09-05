@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { addCase, getCase, updateCase, listCases, recordEvent, markEventStatus, summarize, recordRecoveryOutcome, getMerchant } from '../store.js';
+import { addCase, getCase, updateCase, listCases, recordEvent, markEventStatus, summarize, recordRecoveryOutcome, getMerchant, listExperiments } from '../store.js';
 import { evaluatePolicy } from './policy.js';
 import { recommendRecoveryAction } from './decisionEngine.js';
 import { writeAudit } from './audit.js';
@@ -53,7 +53,7 @@ export async function processVerifiedEvent({ merchantId = 'demo-merchant', event
       const experiment = await listActiveExperiment(merchantId);
       if (experiment) {
         const arm = pickArm(current.id, experiment);
-        current = await updateCase(merchantId, current.id, { experiment: { id: experiment.id, arm: arm.name } });
+        current = arm ? await updateCase(merchantId, current.id, { experiment: { id: experiment.id, arm: arm.name } }) : current;
       }
       await writeAudit({ merchantId, caseId: current.id, actorType: 'razorpay', eventName: 'case_created_from_webhook', details: { eventType, caseKey, amountMinor: data.amountMinor, experiment: current.experiment || null } });
     } else {
@@ -77,21 +77,29 @@ export async function evaluateCase(merchantId, caseId) {
   const policy = evaluatePolicy(current, new Date(), merchant?.policy || {});
   const decision = policy.allowedActions.length ? await recommendRecoveryAction(current, policy.allowedActions) : null;
   let finalDecision = decision;
-  const activeExperiment = current.experiment?.id ? null : await listActiveExperiment(merchantId);
   let experimentAssignment = current.experiment || null;
-  if (!experimentAssignment && activeExperiment) {
-    const arm = pickArm(current.id, activeExperiment);
-    experimentAssignment = { id: activeExperiment.id, arm: arm.name };
-    await updateCase(merchantId, caseId, { experiment: experimentAssignment });
-    current.experiment = experimentAssignment;
+  let experiment = null;
+
+  if (experimentAssignment?.id) {
+    experiment = (await listExperiments(merchantId)).find((item) => String(item.id) === String(experimentAssignment.id));
+  } else {
+    experiment = await listActiveExperiment(merchantId);
+    if (experiment) {
+      const arm = pickArm(current.id, experiment);
+      if (arm) {
+        experimentAssignment = { id: experiment.id, arm: arm.name };
+        await updateCase(merchantId, caseId, { experiment: experimentAssignment });
+      }
+    }
   }
-  if (experimentAssignment) {
-    const experiment = activeExperiment || (await (await import('../store.js')).listExperiments(merchantId)).find((item) => String(item.id) === String(experimentAssignment.id));
-    const arm = experiment?.arms?.find((item) => item.name === experimentAssignment.arm);
+
+  if (experimentAssignment?.arm && experiment) {
+    const arm = experiment.arms?.find((item) => item.name === experimentAssignment.arm);
     if (arm && policy.allowedActions.includes(arm.action)) {
       finalDecision = { ...(decision || {}), recommendedAction: arm.action, source: `${decision?.source || 'local-model'}+experiment`, experimentId: experiment.id, experimentArm: arm.name, explanation: `${decision?.explanation || 'Policy-eligible recovery decision.'} Treatment arm selected by the active recovery experiment.` };
     }
   }
+
   const updated = await updateCase(merchantId, caseId, { riskScore: finalDecision?.riskScore ?? current.riskScore, recoverabilityScore: finalDecision?.recoverabilityScore ?? current.recoverabilityScore, ai: finalDecision, explanation: finalDecision?.explanation || policy.reasons.join(', '), state: finalDecision?.recommendedAction === 'wait' ? 'awaiting_window' : finalDecision ? 'planned' : current.state });
   await writeAudit({ merchantId, caseId, eventName: 'ai_recovery_decision_created', details: { policy, decision: finalDecision, experiment: experimentAssignment } });
   return { case: updated, policy, decision: finalDecision, summary: await summarize(merchantId) };
