@@ -1,12 +1,14 @@
 # Security and Trust Model
 
-RazCodePay handles payment-recovery workflows, so the design separates **decision intelligence** from **authorization and provider truth**.
+RazCodePay handles payment-recovery workflows, so the design separates **decision intelligence**, **authorization**, and **provider truth**.
 
-## Security principles
+> **AI recommends. Policy controls. Executor acts. Razorpay verifies.**
 
-### 1. AI is not an authority
+## 1. Security principles
 
-The model and optional LLM can recommend an action, but they cannot bypass deterministic merchant policy or directly perform arbitrary provider operations.
+### AI is advisory, not authoritative
+
+The local model and optional LLM can recommend an action. They cannot bypass merchant policy or directly perform arbitrary provider operations.
 
 ```text
 AI recommendation
@@ -18,40 +20,51 @@ Execution-time policy re-check
 Provider side effect
 ```
 
-### 2. Provider events are verified
+### Provider events are verified
 
-Razorpay webhook signatures are validated against the raw request body before the application trusts the event.
+Razorpay webhook signatures are validated against the raw request body before the event can affect recovery state. Duplicate provider deliveries are handled idempotently.
 
-Duplicate deliveries are handled using the provider event identifier when available, with deterministic fallback hashing.
+### Merchant data is isolated
 
-### 3. Merchant isolation
+Production-oriented requests are associated with an authenticated merchant identity and role. Application reads/writes are merchant-scoped, and operator mutations are role protected.
 
-Production-oriented requests are associated with an authenticated merchant identity. Database reads and writes are merchant-scoped, and role checks protect operator-facing mutations.
+### Provider secrets are protected
 
-### 4. Provider secrets are protected
+Merchant provider credentials are encrypted before MongoDB persistence using AES-256-GCM. Secret values are not returned through connection-status APIs or rendered in the UI.
 
-Merchant provider credentials are encrypted before MongoDB persistence using AES-256-GCM. Provider secrets are not returned through the connection-status API or rendered in the merchant console.
+### Demo mode is isolated
 
-For a multi-merchant partner platform, the intended long-term model is provider-approved OAuth onboarding rather than collecting merchant API-key secrets.
+`DEMO_MODE=true` uses synthetic data, does not require provider credentials, performs no real provider API calls, and exposes demo-only success/reset controls. Those mutation endpoints are blocked outside demo mode.
 
-### 5. Demo mode is isolated
+## 2. Request and execution trust chain
 
-`DEMO_MODE=true` is designed for safe demonstrations:
+```text
+Authentication
+      ↓
+Merchant scoping
+      ↓
+Verified provider event / case
+      ↓
+Policy pre-filter
+      ↓
+AI decision
+      ↓
+Policy re-check
+      ↓
+Idempotent side effect
+      ↓
+Verified Razorpay outcome
+```
 
-- synthetic workspace/data
-- no provider credentials required
-- no real provider calls
-- synthetic success simulation
+The frontend is never treated as an authorization boundary.
 
-Demo-only endpoints are blocked in production-oriented mode.
+## 3. Sensitive values
 
-## Sensitive values
-
-Never commit or paste into public issues/screenshots:
+Never commit or place in public screenshots/issues:
 
 ```text
 .env files
-Razorpay key secrets
+Razorpay API secrets
 Razorpay webhook secrets
 JWT secrets
 Encryption keys
@@ -59,63 +72,82 @@ SMTP passwords
 LLM/API provider secrets
 ```
 
-## Webhook security
-
-The expected provider path is:
+## 4. Webhook security
 
 ```text
-HTTPS endpoint
+HTTPS request
    ↓
 raw body captured
    ↓
 HMAC verification
    ↓
-event de-duplication
+deduplication
    ↓
-persist verified webhook
+persist event
    ↓
-recovery state transition
+state transition
 ```
 
-An invalid signature must not create or close a recovery case.
+Invalid signatures must not create or close recovery cases.
 
-## Idempotency
+## 5. Idempotency and consistency
 
-Recovery actions use deterministic operation identities and the executor re-checks case state before side effects. This protects against duplicate UI clicks, worker retries and repeated provider delivery.
+The system protects against duplicate UI clicks, worker retries and provider re-delivery using:
 
-## Monetary truth
+- merchant-scoped case keys
+- provider-event deduplication
+- deterministic operation identities
+- terminal-state checks
+- current-case reload before side effects
+- execution-time policy re-check
+- persisted webhook processing status
+- BullMQ retry/backoff
 
-The dashboard deliberately distinguishes:
+## 6. Monetary truth
+
+The application deliberately distinguishes:
 
 ```text
 prediction ≠ recommendation ≠ attempted action ≠ recovered revenue
 ```
 
-Only a verified Razorpay success event can establish the monetary recovery outcome used by the platform.
+Only a verified Razorpay success event can establish the recovery outcome used for recovered revenue attribution.
 
-## Operational hardening before Live Mode
+## 7. Demo vs production-oriented security boundary
 
-A public deployment should additionally complete:
+| Control | Demo mode | Production-oriented mode |
+|---|---|---|
+| Authentication | Synthetic workspace | JWT + RBAC |
+| Provider credentials | Not required | Encrypted at rest |
+| Provider API calls | Disabled | Available when configured |
+| Signed provider events | Not required for synthetic data | Required |
+| Demo reset/success | Available | Blocked |
+| Merchant data | Synthetic | Merchant-scoped |
+
+## 8. Security checklist
+
+- [ ] Invalid webhook signature rejected.
+- [ ] Duplicate provider event does not create duplicate business state.
+- [ ] Demo-only mutations reject production-oriented mode.
+- [ ] Cross-merchant data access is blocked.
+- [ ] Viewer cannot perform protected operator mutations.
+- [ ] Provider secrets never appear in API responses.
+- [ ] Execution re-checks current policy.
+- [ ] Stopped/terminal cases cannot be blindly executed again.
+- [ ] Recovery is credited only after verified provider success.
+- [ ] Authentication endpoints are protected appropriately for deployment.
+
+## 9. Live Mode hardening still required
+
+Before public Live Mode operation, complete:
 
 - managed secret storage and rotation
-- HTTPS and network isolation
-- authentication/session hardening appropriate to the deployed frontend
-- centralized logging and security monitoring
-- dependency/vulnerability scanning
-- penetration/security testing
-- database backup/restore testing
-- incident response procedures
+- HTTPS/network isolation and hardened deployment configuration
+- centralized security/audit monitoring
+- dependency/vulnerability management
+- penetration/security review
+- MongoDB backup/restore validation
 - messaging delivery/bounce/complaint controls
-- model monitoring and calibration
-
-## Security review checklist
-
-- [ ] invalid webhook signature rejected
-- [ ] duplicate webhook does not create duplicate business state
-- [ ] demo-only mutation endpoints reject production mode
-- [ ] unauthorized merchant cannot access another merchant's cases
-- [ ] viewer cannot perform operator mutations
-- [ ] provider secrets never appear in API responses
-- [ ] execution re-checks current policy
-- [ ] stopped/terminal cases cannot be executed again
-- [ ] recovery is credited only after verified provider success
+- model monitoring and outcome calibration
+- incident response and operational runbooks
+- required Razorpay Technology Partner/OAuth onboarding for the intended multi-merchant model
