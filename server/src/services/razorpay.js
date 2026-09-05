@@ -3,18 +3,14 @@ import { decryptSecret } from './security.js';
 
 const API = 'https://api.razorpay.com/v1';
 
-async function request(path, { merchantId, method = 'GET', body, idempotencyKey } = {}) {
+async function request(path, { merchantId, method = 'GET', body } = {}) {
   const connection = await getRazorpayConnection(merchantId);
   if (!connection) throw new Error('Razorpay is not connected for this merchant.');
   const secret = decryptSecret(connection.encryptedSecret);
   const authorization = Buffer.from(`${connection.keyId}:${secret}`).toString('base64');
   const response = await fetch(`${API}${path}`, {
     method,
-    headers: {
-      Authorization: `Basic ${authorization}`,
-      'Content-Type': 'application/json',
-      ...(idempotencyKey ? { 'X-Razorpay-Request-Id': idempotencyKey } : {}),
-    },
+    headers: { Authorization: `Basic ${authorization}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json().catch(() => ({}));
@@ -27,16 +23,16 @@ export async function verifyConnection({ merchantId }) {
   return { connected: true, sampleCount: data.count || 0 };
 }
 
-export async function createPaymentLink({ merchantId, amountMinor, currency, description, customer, expireBy, idempotencyKey }) {
+export async function createPaymentLink({ merchantId, amountMinor, currency, description, customer, expireBy, referenceId }) {
   return request('/payment_links', {
     merchantId,
     method: 'POST',
-    idempotencyKey,
     body: {
       amount: amountMinor,
       currency,
       accept_partial: false,
       description,
+      reference_id: referenceId,
       customer: { name: customer?.name, email: customer?.email, contact: customer?.contact },
       notify: { sms: false, email: false },
       reminder_enable: true,
