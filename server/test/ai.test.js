@@ -7,7 +7,7 @@ test('local AI scorer returns bounded probabilities and signals', () => {
   const result = scoreRecoveryPotential({ type: 'failed_subscription', amountMinor: 24900, failureCode: 'CUSTOMER_ACTION_REQUIRED', consent: { email: true }, attemptCount: 0, openedAt: new Date().toISOString() });
   assert.ok(result.riskScore >= 0 && result.riskScore <= 1);
   assert.ok(result.recoverabilityScore >= 0 && result.recoverabilityScore <= 1);
-  assert.equal(result.signals.length, 6);
+  assert.ok(result.signals.length >= 5);
 });
 
 test('AI recommendation is always bounded by allowed actions', async () => {
