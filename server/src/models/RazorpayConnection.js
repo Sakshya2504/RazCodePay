@@ -5,6 +5,7 @@ const schema = new mongoose.Schema({
   mode: { type: String, enum: ['test', 'live'], default: 'test' },
   keyId: { type: String, required: true },
   encryptedSecret: { type: String, required: true },
+  encryptedWebhookSecret: { type: String },
   status: { type: String, enum: ['connected', 'error', 'revoked'], default: 'connected' },
   connectedAt: { type: Date, default: Date.now },
   lastVerifiedAt: Date,
