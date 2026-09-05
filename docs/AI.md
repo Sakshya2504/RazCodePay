@@ -2,30 +2,46 @@
 
 ## Decision pipeline
 
-RazCodePay has two intelligence sources and one authority layer.
+RazCodePay uses an interpretable local scoring model, optional LLM reasoning, and a deterministic policy layer.
 
 ```text
-case facts
+provider facts
    │
-   ├── local-recovery-v1
-   │      ├── risk score
-   │      ├── recoverability score
-   │      └── top signals
+   ├── local-recovery-v2
+   │      ├── calibrated recoverability score
+   │      ├── operational risk score
+   │      ├── expected recovery value
+   │      ├── confidence / uncertainty
+   │      └── feature-level signals
    │
    ├── optional OpenAI LLM
-   │      └── structured action + explanation
+   │      └── structured reasoning over allowed actions
    │
    └── deterministic policy
-          └── final allowed action
+          └── final action set + execution re-check
 ```
 
 ## Local model
 
-`server/src/ai/riskModel.js` is an interpretable feature-weighted model. It is intentionally small enough to inspect during a hackathon review.
+`server/src/ai/riskModel.js` is an interpretable hybrid scorer. It is deliberately small and deterministic enough to audit in a hackathon review; it does **not** claim to be trained on proprietary production labels.
 
-Inputs include failure profile, amount exposure, event freshness, customer intent, consent, and prior attempts.
+The model combines:
 
-The output is bounded to `[0,1]` and contains model version + feature signals for the UI.
+- failure-code priors and recovery type priors
+- event freshness with time-decay behavior
+- customer intent and contact reachability
+- consent availability
+- amount opportunity
+- prior-attempt pressure
+- provider-context completeness
+
+It exposes `riskScore`, `recoverabilityScore`, `expectedRecoveryMinor`, `confidence`, `uncertainty`, `dataQuality`, model version and feature signals. This makes the recommendation explainable instead of presenting an opaque probability.
+
+## Action selection
+
+The local decision layer chooses only from the policy-approved action set. It considers both recoverability and expected recovered value, while routing high-value, low-confidence or high-uncertainty cases toward human review.
+
+Known failure profiles can also steer the action toward a payment-method update rather than a generic reminder when the provider evidence supports that choice.
 
 ## LLM mode
 
@@ -36,14 +52,32 @@ AI_API_KEY=...
 AI_MODEL=gpt-4o-mini
 ```
 
-The model receives only normalized case facts and the already-approved action set. The prompt explicitly forbids inventing provider operations, payment instructions or discounts.
+The LLM receives normalized case facts plus the already-approved action set. The prompt forbids inventing discounts, provider operations, deadlines, payment links, or customer facts.
 
-The result is accepted only when the action is a member of the allowed action list. Invalid output or API failure falls back to the local model.
+The response is accepted only when its action is in the allowed set. Invalid output or API failure falls back to the local model.
 
-## Why this is safer
+## Guardrails
 
-The LLM is an analyst, not a wallet controller. The policy engine still decides whether an action can happen, and the executor re-checks policy just before the side effect.
+The LLM and local model never override deterministic merchant policy. Consent, quiet hours, attempt caps, value thresholds and recovery-window rules are enforced before planning and checked again immediately before execution.
+
+The recovery grace period is merchant-configurable. A new failure is placed into a protected waiting window before customer-facing action is eligible.
 
 ## What to show judges
 
-Open **AI decisions** and inspect a case. Point out the model version, recovery score, confidence, signals, action recommendation, and guardrail boundaries. Then open **Guardrails** and show that high-value or consent-blocked actions are removed independently of AI reasoning.
+Open **AI decisions** and inspect a case. Point out:
+
+1. recoverability and risk
+2. expected recovery value
+3. confidence, uncertainty and data quality
+4. feature-level reason codes
+5. the selected action and model version
+6. the policy boundaries shown in Guardrails
+
+The core operating contract remains:
+
+```text
+AI recommends
+Policy authorizes
+Executor acts
+Razorpay verifies
+```
