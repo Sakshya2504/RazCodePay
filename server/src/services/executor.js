@@ -15,6 +15,11 @@ function recoveryMessage(caseData, paymentLink) {
   return `Hi ${name},\n\nWe could not complete your recent payment. Please use the secure payment link below to finish it:\n\n${paymentLink}\n\nIf you have already paid, you can ignore this message.\n\nRazCodePay`;
 }
 
+function methodUpdateMessage(caseData) {
+  const name = caseData.customer?.name || 'there';
+  return `Hi ${name},\n\nWe could not complete your recent payment. Please check or update your saved payment method and try again.\n\nIf you have already paid, you can ignore this message.\n\nRazCodePay`;
+}
+
 export async function executeRecoveryAttempt(merchantId, caseId) {
   const current = await getCase(merchantId, caseId);
   if (!current) throw new Error('Recovery case not found');
@@ -48,6 +53,13 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
         patch.state = 'planned';
         patch.nextActionAt = new Date(Date.now() + graceMinutes * 60000);
       }
+    }
+  } else if (requestedAction === 'request_payment_method_update') {
+    const email = await sendRecoveryEmail({ merchantId, caseId, to: current.customer?.email, subject: recoverySubject(current), text: methodUpdateMessage(current) });
+    attempt = { ...attempt, status: email.sent ? 'sent' : 'suppressed', communicationReference: email.providerReference || null, error: email.reason || null, sentAt: email.sent ? new Date() : undefined };
+    if (!email.sent) {
+      patch.state = 'planned';
+      patch.nextActionAt = new Date(Date.now() + graceMinutes * 60000);
     }
   } else if (requestedAction === 'create_human_task') {
     attempt = { ...attempt, status: 'queued_for_operator', sentAt: new Date() };
