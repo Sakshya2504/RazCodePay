@@ -11,39 +11,42 @@ const POLICY = {
 const terminalStates = new Set(['recovered', 'stopped', 'expired']);
 
 export function evaluatePolicy(caseData, now = new Date()) {
-  const allowed = new Set(['wait', 'send_payment_reminder', 'request_payment_method_update', 'create_human_task', 'stop_case']);
+  const allowed = new Set(['wait', 'send_payment_reminder', 'create_payment_link', 'request_payment_method_update', 'create_human_task', 'stop_case']);
   const reasons = [];
 
   if (terminalStates.has(caseData.state)) return { allowedActions: [], reasons: ['terminal_case'] };
 
   const ageHours = Math.max(0, (now - new Date(caseData.openedAt || now)) / 36e5);
-  if (ageHours > POLICY.recoveryWindowHours) {
-    return { allowedActions: ['stop_case'], reasons: ['recovery_window_expired'] };
-  }
+  if (ageHours > POLICY.recoveryWindowHours) return { allowedActions: ['stop_case'], reasons: ['recovery_window_expired'] };
 
   if ((caseData.attemptCount || 0) >= POLICY.maxAttemptsPerCase) {
     allowed.delete('send_payment_reminder');
+    allowed.delete('create_payment_link');
     allowed.add('create_human_task');
     reasons.push('maximum_case_attempts_reached');
   }
 
   if (!caseData.consent?.email) {
     allowed.delete('send_payment_reminder');
+    allowed.delete('create_payment_link');
     reasons.push('email_consent_missing');
   }
 
   const hour = now.getHours();
   if (hour >= POLICY.quietHours.start || hour < POLICY.quietHours.end) {
     allowed.delete('send_payment_reminder');
+    allowed.delete('create_payment_link');
     reasons.push('merchant_quiet_hours');
   }
 
   if (caseData.amountMinor > POLICY.maxAutoContactMinor) {
     allowed.delete('send_payment_reminder');
+    allowed.delete('create_payment_link');
     allowed.add('create_human_task');
     reasons.push('automatic_contact_cap_exceeded');
   } else if (caseData.amountMinor > POLICY.approvalRequiredAboveMinor) {
     allowed.delete('send_payment_reminder');
+    allowed.delete('create_payment_link');
     allowed.add('create_human_task');
     reasons.push('human_approval_threshold');
   }
@@ -55,6 +58,4 @@ export function evaluatePolicy(caseData, now = new Date()) {
   return { allowedActions: [...allowed], reasons };
 }
 
-export function getPolicy() {
-  return structuredClone(POLICY);
-}
+export function getPolicy() { return structuredClone(POLICY); }
