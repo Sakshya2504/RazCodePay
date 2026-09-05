@@ -8,46 +8,54 @@
 
 Open `http://127.0.0.1:5173`.
 
-Point to the four headline metrics: revenue at risk, recovered revenue, active cases and operator time saved.
+Point to revenue at risk, recovered revenue, active cases and expected recoverable value.
 
-Say: “This is synthetic Test Mode data. The product mirrors the real event-to-recovery workflow without touching customer money.”
+Say: “This console is connected to Razorpay Test Mode. MongoDB is the application source of truth and Redis/BullMQ handles background recovery work.”
 
-## 0:55 — Show the AI
+## 0:50 — Show a real provider event
 
-Open **AI decisions** and inspect a case.
+Open the **Recovery queue**.
 
-Say: “RazCodePay has an actual recovery scoring layer. It evaluates failure profile, freshness, customer intent, consent, amount exposure and prior attempts. The result is a recoverability score, risk score, signals, confidence and a ranked action.”
+Use a Test Mode Payment Link and trigger a failed payment. Razorpay sends `payment.failed` to the public webhook endpoint, which RazCodePay verifies before creating the recovery case.
 
-Then say: “An optional LLM can add natural-language reasoning, but it is only allowed to choose from the actions policy has already approved.”
+Say: “The case is not manually invented in the dashboard. A verified provider event creates it.”
 
-## 1:30 — Show the guardrails
+## 1:10 — Show the AI
+
+Open **AI decisions** and inspect the new case.
+
+Say: “The local-recovery-v2 scorer combines failure profile, event freshness, customer intent, consent, contact reachability, amount opportunity, provider context and prior-attempt pressure.”
+
+Point out recoverability, risk, expected recovery value, confidence, uncertainty and feature signals.
+
+Say: “The optional LLM can add language reasoning, but it cannot escape the already-approved action set.”
+
+## 1:35 — Show the guardrails
 
 Open **Guardrails**.
 
-Point out consent, quiet hours, attempt caps, automatic-contact limits and the human-review threshold.
+Point out the configurable recovery grace period, quiet hours, attempt cap, automatic-contact cap and human-review threshold.
 
-Say: “The model does not own these controls. The executor checks policy again at the moment of action.”
+Say: “Policy is independent from the model. It is checked before planning and again before the action executes.”
 
 ## 1:55 — Execute safely
 
-Inspect a case where the recommendation is `send_payment_reminder`.
+Inspect a policy-eligible case with `send_payment_reminder` or `create_payment_link`.
 
-Click **Run test-mode reminder**.
+Click **Execute recovery**.
 
-Say: “This records an idempotent test-mode outbound attempt. It deliberately does not claim that money was recovered.”
+Say: “The executor performs a provider-side action with an idempotency key. A successful action is not automatically counted as recovered revenue.”
 
 ## 2:15 — Prove the closed loop
 
-Click **Simulate verified Razorpay success**.
+Complete the recovery payment in Razorpay Test Mode.
 
-Say: “The simulator feeds the same recovery service with a synthetic `payment.captured` event. The case now moves to `recovered` and the recovered amount is updated.”
-
-For the real integration, explain that the same recovery service consumes a signed Razorpay webhook.
+Razorpay emits a success event such as `payment.captured`. RazCodePay verifies the signed event, matches it to the open recovery case, records the recovery outcome and closes the case.
 
 ## 2:40 — Provider truth
 
-Say: “Razorpay is the monetary source of truth. The webhook signature is validated against the raw request body, duplicate events are deduplicated, and provider success closes the case.” Razorpay documents HMAC-SHA256 webhook validation and the `x-razorpay-event-id` identifier for deduplication. citeturn540502search2turn540502search0
+Say: “Razorpay is the monetary source of truth. Webhook signatures are validated, duplicate events are deduplicated, and only verified provider success can close the case.”
 
 ## 2:55 — Closing line
 
-“RazCodePay is selective by design: AI proposes, deterministic policy controls, the executor acts, and Razorpay verifies.”
+“RazCodePay is selective by design: AI recommends, deterministic policy controls, the executor acts, and Razorpay verifies.”
