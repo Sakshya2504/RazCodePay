@@ -4,50 +4,32 @@ Razorpay AI Buildathon · Track 03
 
 RazCodePay is an AI-assisted revenue recovery control plane. It turns failed or overdue payment signals into bounded recovery decisions, executes only policy-approved actions, and closes recovery only after a verified provider success event.
 
-## What makes the project selectable
+## Why this project is selectable
 
-**AI is visible, not decorative.** Every case has an interpretable recovery score, ranked signals, a confidence value, recommended action, and reason codes. When `AI_API_KEY` is present, an LLM adds a second reasoning layer. The LLM can only choose from the deterministic policy allow-list.
-
-**The demo is hard to break.** The backend runs on port `3000` without requiring MongoDB, Razorpay credentials, or an LLM key. The frontend runs on `5173`. This means a judge can clone, install, and open the dashboard immediately.
-
-**Automation has brakes.** Consent, quiet hours, attempt caps, monetary thresholds, terminal-state checks, webhook signature verification, and idempotency are all handled outside the AI layer.
-
-**The money metric is provider-grounded.** The UI never claims a message caused recovery. A case is marked recovered only when a matching Razorpay success event is processed.
+- **Visible AI:** every case gets risk, recoverability, signals, confidence, reason codes, and an action recommendation. An optional LLM adds reasoning on top of the local model.
+- **Safe autonomy:** consent, quiet hours, monetary thresholds, attempt caps, idempotency, and terminal-state checks live outside AI.
+- **Provider-grounded money:** a sent reminder never equals recovered money. Only a matching Razorpay success event closes a case.
+- **Judge-friendly setup:** backend `3000`, frontend `5173`, and MongoDB/Razorpay/LLM are optional for the demo.
 
 ## Architecture
 
 ```text
-Razorpay Webhook
-      │ signed + verified
-      ▼
-Event Normalizer ────────► Immutable event/audit trail
-      │
-      ▼
-Recovery Case
-      │
-      ├── deterministic policy pre-filter
-      │
-      ├── local AI recovery model
-      │       └── optional LLM reasoning
-      │
-      └── deterministic policy re-check
-              │
-              ▼
-       Test-mode executor
-              │
-              ▼
-     customer/provider signal
-              │
-              ▼
-      verified Razorpay success
-              │
-              ▼
-         Case = recovered
+Razorpay event → signature verification → normalized recovery case
+                    ↓
+         policy pre-filter → local AI model → optional LLM
+                    ↓
+             policy re-check → test-mode executor
+                    ↓
+            verified Razorpay success
+                    ↓
+                  RECOVERED
 ```
 
-## Local run
+See [`architecture.md`](./architecture.md), [`docs/AI.md`](./docs/AI.md), and [`docs/DEMO_SCRIPT.md`](./docs/DEMO_SCRIPT.md).
 
-### 1. Backend
+## Run locally
+
+### Backend — port 3000
 
 ```bash
 cd server
@@ -56,11 +38,9 @@ copy .env.example .env
 npm run dev
 ```
 
-Backend: `http://127.0.0.1:3000`
+Health: `http://127.0.0.1:3000/api/health`
 
-Health check: `http://127.0.0.1:3000/api/health`
-
-### 2. Frontend
+### Frontend — port 5173
 
 Open a second terminal:
 
@@ -70,68 +50,61 @@ npm install
 npm run dev
 ```
 
-Frontend: `http://127.0.0.1:5173`
+Console: `http://127.0.0.1:5173`
 
-The Vite server is explicitly configured for `5173`; the API defaults to `3000`.
+The backend uses an in-memory operational store by default, so MongoDB is not required to render or demo the product.
 
-## Demo flow
+## Demo path
 
-1. Open the dashboard.
-2. Open **AI decisions** to see the ranked recovery opportunities and model logic.
+1. Open the console.
+2. Use **AI decisions** to inspect ranked recovery opportunities.
 3. Open **Recovery queue** and inspect a case.
-4. Click **Inspect**. The API runs the AI decision and policy evaluation.
-5. For an allowed case, run **Run test-mode reminder**. The event is recorded with an idempotency key.
-6. Send a verified Razorpay `payment.captured` or `order.paid` webhook to demonstrate the final recovery transition.
-7. Open **Guardrails** to show the hard business boundaries.
-8. Click **Reset demo cohort** to restore a fresh 60-case cohort.
+4. Run the AI decision; the API applies policy, then scores the case.
+5. Run **Run test-mode reminder** for a policy-approved case.
+6. Run **Simulate verified Razorpay success** to demonstrate the authoritative recovery transition.
+7. Open **Guardrails** to show exactly what AI cannot override.
+8. Use **Reset demo cohort** to restore 60 synthetic cases.
 
-## Optional AI upgrade
+## AI implementation
 
-Set `AI_API_KEY` in `server/.env`. RazCodePay will use the local model to establish the numeric baseline and the configured LLM to add bounded reasoning. If the LLM is unavailable, the local model continues working without changing the safety policy.
+`server/src/ai/riskModel.js` contains the local recovery model. It combines failure recoverability, event freshness, customer intent, consent, amount exposure, and prior-attempt pressure into bounded risk/recoverability scores and interpretable signals.
 
-## Optional MongoDB
-
-Set `MONGODB_URI` to enable MongoDB connectivity for future persistence work. The current demo intentionally keeps the operational path independent from MongoDB so setup failures cannot make the dashboard blank.
+`server/src/services/decisionEngine.js` then chooses only from the deterministic policy allow-list. When `AI_API_KEY` is present, an OpenAI-compatible LLM adds structured reasoning; invalid or unavailable LLM output falls back to the local model.
 
 ## Razorpay Test Mode
 
-The webhook endpoint is:
+Webhook endpoint:
 
 ```text
 POST /api/webhooks/razorpay
 ```
 
-Required header for a signed event:
+Headers:
 
 ```text
 X-Razorpay-Signature: <hmac-sha256-of-raw-body>
-```
-
-Optional event de-duplication header:
-
-```text
 x-razorpay-event-id: <unique-event-id>
 ```
 
-Razorpay documents HMAC-SHA256 validation over the **raw webhook request body** and recommends de-duplicating using `x-razorpay-event-id`. The implementation follows that pattern. citeturn540502search2turn540502search0
+Razorpay documents HMAC-SHA256 verification using the raw webhook body and recommends `x-razorpay-event-id` for de-duplication. citeturn540502search2turn540502search0
 
-Useful Track 03 events include `payment.failed` and `payment.captured`; Razorpay also documents `order.paid` as the paid-order event. citeturn540502search1
+Payment success signals in the MVP include `payment.captured` and `order.paid`; Razorpay documents both as successful payment states/events. citeturn540502search1
 
 ## API map
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/health` | API health and operating mode |
-| `GET /api/dashboard` | Summary, cases, and current policy |
-| `GET /api/cases` | Recovery queue |
-| `GET /api/cases/:id` | One case |
-| `POST /api/cases/:id/evaluate` | Run policy + AI decision |
-| `POST /api/cases/:id/execute` | Record a test-mode outbound attempt |
-| `POST /api/cases/:id/stop` | Merchant stop |
-| `POST /api/demo/reset` | Create 60 synthetic cases |
-| `GET /api/policy` | Current guardrails |
-| `GET /api/audit` | Recent audit entries |
-| `POST /api/webhooks/razorpay` | Signed provider events |
+| `GET /api/health` | API health |
+| `GET /api/dashboard` | summary + cases + policy |
+| `GET /api/cases` | recovery queue |
+| `POST /api/cases/:id/evaluate` | policy + AI decision |
+| `POST /api/cases/:id/execute` | test-mode reminder |
+| `POST /api/cases/:id/simulate-success` | demo provider-success transition |
+| `POST /api/cases/:id/stop` | merchant stop |
+| `POST /api/demo/reset` | 60-case synthetic cohort |
+| `GET /api/policy` | guardrails |
+| `GET /api/audit` | audit trail |
+| `POST /api/webhooks/razorpay` | signed provider events |
 
 ## Repository layout
 
@@ -142,7 +115,6 @@ RazCodePay/
 │  ├─ AI.md
 │  ├─ API.md
 │  └─ DEMO_SCRIPT.md
-├─ ml/
 ├─ server/
 │  ├─ src/
 │  │  ├─ ai/riskModel.js
@@ -163,18 +135,10 @@ RazCodePay/
    └─ vite.config.js
 ```
 
-## Validation checklist
+## Validation
 
-- Backend defaults to `3000`.
-- Frontend defaults to `5173`.
-- Frontend never requires MongoDB merely to render.
-- AI recommendations are allow-list constrained.
-- Execution re-checks policy at action time.
-- Provider success is the only recovery confirmation path.
-- Webhook signatures use raw request bytes.
-- Duplicate provider events are idempotent.
-- Tests cover policy boundaries and AI bounds.
+GitHub Actions validates server tests, server syntax, and the React production build. The latest full rebuild passed those checks before the final end-to-end simulator refinement.
 
-## Scope note
+## Production hardening
 
-This repository is a buildathon-grade reference implementation. The test-mode executor records a synthetic outbound action instead of sending real customer communications. Production deployment still needs authentication/RBAC, durable persistence, secret management, observability, and a real messaging provider adapter.
+The buildathon version intentionally does not send real customer messages. Production hardening should add authentication/RBAC, durable MongoDB collections, queue-backed workers, a real messaging provider, model monitoring, secret management, and merchant-specific configuration.
