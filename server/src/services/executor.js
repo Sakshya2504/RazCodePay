@@ -21,9 +21,9 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
   if (['recovered', 'stopped', 'expired'].includes(current.state)) throw new Error(`Case is terminal: ${current.state}`);
 
   const merchant = await getMerchant(merchantId);
-  const policy = evaluatePolicy(current, new Date(), merchant?.policy || {});
+  const policyResult = evaluatePolicy(current, new Date(), merchant?.policy || {});
   const requestedAction = current.ai?.recommendation || 'send_payment_reminder';
-  if (!policy.allowedActions.includes(requestedAction)) throw new Error(`Policy denied ${requestedAction}: ${policy.reasons.join(', ') || 'not allowed'}`);
+  if (!policyResult.allowedActions.includes(requestedAction)) throw new Error(`Policy denied ${requestedAction}: ${policyResult.reasons.join(', ') || 'not allowed'}`);
 
   const sequence = (current.attemptCount || 0) + 1;
   const actionKey = crypto.createHash('sha256').update(`${caseId}:${requestedAction}:${sequence}`).digest('hex');
@@ -32,6 +32,7 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
 
   let attempt = { action: requestedAction, channel: 'email', status: 'planned', idempotencyKey, scheduledFor: new Date() };
   let patch = { attemptCount: sequence, attempts: [...(current.attempts || [])], state: 'monitoring', nextActionAt: new Date(Date.now() + 24 * 3600000) };
+  const graceMinutes = policyResult.policy.graceMinutes;
 
   if (config.demoMode) {
     attempt = { ...attempt, status: 'test_mode', providerReference: `demo-message-${actionKey.slice(0, 12)}`, sentAt: new Date() };
@@ -45,7 +46,7 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
       attempt = { ...attempt, status: email.sent ? 'sent' : 'suppressed', communicationReference: email.providerReference || null, error: email.reason || null, sentAt: email.sent ? new Date() : undefined };
       if (!email.sent) {
         patch.state = 'planned';
-        patch.nextActionAt = new Date(Date.now() + 30 * 60000);
+        patch.nextActionAt = new Date(Date.now() + graceMinutes * 60000);
       }
     }
   } else if (requestedAction === 'create_human_task') {
@@ -53,11 +54,11 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
   } else {
     attempt = { ...attempt, status: 'unsupported_action' };
     patch.state = 'planned';
-    patch.nextActionAt = new Date(Date.now() + 30 * 60000);
+    patch.nextActionAt = new Date(Date.now() + graceMinutes * 60000);
   }
 
   patch.attempts = [...patch.attempts, attempt];
   const updated = await updateCase(merchantId, caseId, patch);
-  await writeAudit({ merchantId, caseId, eventName: 'recovery_action_executed', details: { attempt, policy } });
+  await writeAudit({ merchantId, caseId, eventName: 'recovery_action_executed', details: { attempt, policy: policyResult.policy } });
   return { case: updated, attempt, duplicate: false };
 }
