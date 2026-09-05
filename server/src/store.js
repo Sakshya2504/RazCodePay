@@ -14,6 +14,7 @@ import { CommunicationEvent } from './models/CommunicationEvent.js';
 const memory = new Map();
 const memoryEvents = new Set();
 const memoryAudits = [];
+const memoryPolicies = new Map();
 const terminal = new Set(['recovered', 'stopped', 'expired']);
 const memoryMode = () => config.demoMode || !config.mongodbUri;
 const clone = (value) => structuredClone(value);
@@ -94,13 +95,22 @@ export async function addAudit(entry) { if (memoryMode()) { memoryAudits.push({ 
 export async function listAudits(merchantId) { if (memoryMode()) return clone(memoryAudits.filter((item) => item.merchantId === merchantId).slice(-100).reverse()); return (await AuditEvent.find({ merchantId }).sort({ createdAt: -1 }).limit(100).lean()).map(normalize); }
 export async function findUserByEmail(email) { if (memoryMode()) return null; return User.findOne({ email: email.toLowerCase() }).select('+passwordHash'); }
 export async function createUser({ name, email, passwordHash, merchantName, slug }) { if (memoryMode()) throw new Error('Registration requires MongoDB and DEMO_MODE=false.'); const merchant = await Merchant.create({ name: merchantName, slug }); const user = await User.create({ name, email: email.toLowerCase(), passwordHash, merchantId: merchant._id }); return { user, merchant }; }
-export async function getMerchant(merchantId) { if (memoryMode()) return { id: merchantId, name: 'Demo Merchant', policy: {} }; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return Merchant.findById(merchantId).lean(); }
+export async function getMerchant(merchantId) {
+  if (memoryMode()) return { id: merchantId, name: 'Demo Merchant', policy: memoryPolicies.get(merchantId) || {} };
+  if (!mongoose.Types.ObjectId.isValid(merchantId)) return null;
+  return Merchant.findById(merchantId).lean();
+}
+export async function updateMerchantPolicy(merchantId, policy) {
+  if (memoryMode()) { memoryPolicies.set(merchantId, clone(policy)); return { id: merchantId, policy: clone(policy) }; }
+  if (!mongoose.Types.ObjectId.isValid(merchantId)) return null;
+  return normalize(await Merchant.findByIdAndUpdate(merchantId, { $set: { policy: clone(policy) } }, { new: true }));
+}
 export async function saveRazorpayConnection(merchantId, value) { if (memoryMode()) return value; return RazorpayConnection.findOneAndUpdate({ merchantId }, { $set: value }, { upsert: true, new: true }).lean(); }
 export async function getRazorpayConnection(merchantId) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(merchantId)) return null; return RazorpayConnection.findOne({ merchantId }); }
 
 export async function createExperiment(merchantId, input) { if (memoryMode()) return { ...input, id: `exp_demo_${randomUUID().slice(0, 6)}`, merchantId, status: 'draft' }; return normalize(await Experiment.create({ ...input, merchantId })); }
 export async function listExperiments(merchantId) { if (memoryMode()) return []; return (await Experiment.find({ merchantId }).sort({ createdAt: -1 }).lean()).map(normalize); }
-export async function updateExperiment(merchantId, experimentId, patch) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(experimentId)) return null; return normalize(await Experiment.findOneAndUpdate({ _id: experimentId, merchantId }, { $set: clone(patch) }, { new: true })); }
+export async function updateExperiment(merchantId, experimentId, patch) { if (memoryMode()) return null; if (!mongoose.Types.ObjectId.isValid(experimentId)) return null; return normalize(await Experiment.findOneAndUpdate({ _id: experimentId, merchantId }, { $set: patch }, { new: true })); }
 export async function recordRecoveryOutcome(entry) { if (memoryMode()) return { ...entry, id: randomUUID() }; return normalize(await RecoveryOutcome.create(entry)); }
 export async function getExperimentMetrics(merchantId) {
   if (memoryMode()) return [];
@@ -108,5 +118,5 @@ export async function getExperimentMetrics(merchantId) {
 }
 
 export async function getCommunicationEvents(merchantId, caseId) { if (memoryMode()) return []; if (!mongoose.Types.ObjectId.isValid(merchantId) || !mongoose.Types.ObjectId.isValid(caseId)) return []; return (await CommunicationEvent.find({ merchantId, caseId }).sort({ occurredAt: -1 }).limit(100).lean()).map(normalize); }
-export async function clearStore() { memory.clear(); memoryEvents.clear(); memoryAudits.length = 0; }
+export async function clearStore() { memory.clear(); memoryEvents.clear(); memoryAudits.length = 0; memoryPolicies.clear(); }
 export const resetStore = clearStore;
