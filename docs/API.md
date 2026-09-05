@@ -2,11 +2,42 @@
 
 Base URL: `http://127.0.0.1:3000/api`
 
-## Dashboard
+## Authentication
 
-`GET /dashboard` returns the summary, visible recovery cases, and current policy.
+Production mode (`DEMO_MODE=false`) uses a Bearer access token issued by the auth endpoints.
 
-## Cases
+```text
+Authorization: Bearer <access-token>
+```
+
+Demo mode bypasses authentication and uses the synthetic `demo-merchant` workspace.
+
+## Auth
+
+`POST /auth/register`
+
+```json
+{
+  "name": "Asha Sharma",
+  "email": "asha@example.com",
+  "password": "at-least-10-characters",
+  "merchantName": "Acme SaaS"
+}
+```
+
+Creates a MongoDB-backed merchant workspace and owner account.
+
+`POST /auth/login`
+
+Returns a one-hour access token.
+
+`GET /auth/me`
+
+Returns the authenticated identity and merchant claims.
+
+## Dashboard and cases
+
+`GET /dashboard` returns summary KPIs, visible recovery cases and the active policy.
 
 `GET /cases`
 
@@ -14,31 +45,50 @@ Base URL: `http://127.0.0.1:3000/api`
 
 `POST /cases/:id/evaluate`
 
-Runs deterministic policy evaluation, the local AI scorer and optional LLM reasoning. The response includes the updated case, policy reasons, decision and dashboard summary.
+Runs policy evaluation, the local recovery model and optional LLM reasoning. The LLM only receives actions already approved by policy.
 
 `POST /cases/:id/execute`
 
-Records one test-mode reminder attempt after a fresh policy check. It never sends a real customer message.
-
-`POST /cases/:id/simulate-success`
-
-Runs the same recovery transition used by the signed provider-success path, but with a synthetic `payment.captured` event. This exists only for the buildathon demo and lets judges see the final `monitoring → recovered` transition without touching real money.
+Re-checks policy and executes the recommended action. In demo mode a synthetic transport is recorded. In production, `create_payment_link` uses the merchant's verified Razorpay connection.
 
 `POST /cases/:id/stop`
 
-Stops future automation.
+Stops future automation. Operator-facing mutations require an owner, admin or operator role.
 
-Body:
+`POST /cases/:id/simulate-success`
 
-```json
-{ "reason": "merchant_demo_stop" }
-```
+Demo-only. Injects a synthetic `payment.captured` event so judges can see a case transition to `recovered` without touching real money. This endpoint returns `403` in production mode.
 
 ## Demo
 
 `POST /demo/reset`
 
-Creates a reproducible 60-case synthetic cohort containing active, recovered and stopped examples.
+Demo-only. Creates a reproducible 60-case synthetic cohort. This endpoint returns `403` in production mode so synthetic data cannot accidentally be created in a live merchant workspace.
+
+## Razorpay integration
+
+`GET /integrations/razorpay`
+
+Returns merchant connection status without exposing secrets.
+
+`POST /integrations/razorpay`
+
+Owner/admin only. Example:
+
+```json
+{
+  "keyId": "rzp_test_...",
+  "keySecret": "...",
+  "webhookSecret": "...",
+  "mode": "test"
+}
+```
+
+The backend verifies the credentials against Razorpay before storing the encrypted secrets in MongoDB.
+
+`DELETE /integrations/razorpay`
+
+Revokes the stored provider connection.
 
 ## Policy and audit
 
@@ -46,22 +96,29 @@ Creates a reproducible 60-case synthetic cohort containing active, recovered and
 
 `GET /audit`
 
+`GET /merchant`
+
 ## Health
 
 `GET /health`
 
 ## Razorpay webhook
 
-`POST /webhooks/razorpay`
+Production endpoint:
+
+```text
+POST /webhooks/razorpay/<merchant-mongodb-id>
+```
 
 Headers:
 
 ```text
-X-Razorpay-Signature
-x-razorpay-event-id
-X-RazCodePay-Merchant-Id
+X-Razorpay-Signature: <hmac-sha256-of-raw-body>
+x-razorpay-event-id: <unique-provider-event-id>
 ```
 
-The signature is computed over the raw request body with HMAC-SHA256. Razorpay recommends the unique event header for de-duplication. citeturn540502search2turn540502search0
+The webhook handler verifies the signature before parsing JSON, persists the event, deduplicates repeated deliveries, updates processing status, and feeds only verified events into the recovery engine.
 
-The MVP listens for failure signals such as `payment.failed`, and closes matching cases on success signals such as `payment.captured` or `order.paid`. citeturn540502search1
+Razorpay documents HMAC-SHA256 validation over the raw webhook body and recommends the unique event header for duplicate-event handling. citeturn540502search2turn540502search0
+
+The recovery engine currently uses failure signals such as `payment.failed` and success signals such as `payment.captured` or `order.paid`. citeturn540502search1
