@@ -6,6 +6,7 @@ import { config, validateConfiguration } from './config.js';
 import { connectDatabase } from './db.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerCaseRoutes } from './routes/cases.js';
+import { registerDemoRoutes } from './routes/demo.js';
 import { RecoveryCase } from './models/RecoveryCase.js';
 
 const app = express();
@@ -54,6 +55,7 @@ app.get('/api/recovery/summary', async (req, res) => {
 
 registerWebhookRoutes(app);
 registerCaseRoutes(app);
+registerDemoRoutes(app);
 
 app.use((error, _req, res, _next) => {
   console.error('Unhandled API error:', error.message);
