@@ -1,12 +1,14 @@
 # API Reference
 
-Base URL (local):
+**Razorpay AI Buildathon · Track 03**
+
+Local base URL:
 
 ```text
 http://127.0.0.1:3000/api
 ```
 
-## Authentication
+## 1. Authentication
 
 Production-oriented mode (`DEMO_MODE=false`) uses a Bearer access token:
 
@@ -14,15 +16,19 @@ Production-oriented mode (`DEMO_MODE=false`) uses a Bearer access token:
 Authorization: Bearer <access-token>
 ```
 
-The frontend stores the session token locally and attaches it to API requests. Merchant identity and role are enforced server-side.
+Authentication establishes the merchant and user role. Database access and mutations are merchant-scoped on the server.
 
 Demo mode uses the synthetic `demo-merchant` workspace and does not require authentication.
 
-## Authentication endpoints
+## 2. Authentication endpoints
 
-### `POST /auth/register`
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/auth/register` | Create merchant workspace and owner account |
+| POST | `/auth/login` | Authenticate user and return access context |
+| GET | `/auth/me` | Return authenticated identity and role |
 
-Create a merchant workspace and owner account.
+Example registration body:
 
 ```json
 {
@@ -33,71 +39,53 @@ Create a merchant workspace and owner account.
 }
 ```
 
-### `POST /auth/login`
+## 3. Dashboard and recovery cases
 
-Authenticate an existing merchant user. Returns an access token and authenticated user context.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/dashboard` | Merchant KPIs, visible cases and active policy |
+| GET | `/cases` | Merchant-scoped recovery queue |
+| GET | `/cases/:id` | Recovery case detail |
+| POST | `/cases/:id/evaluate` | Run policy-aware AI evaluation |
+| POST | `/cases/:id/execute` | Execute an eligible bounded recovery action |
+| POST | `/cases/:id/stop` | Stop future automation for a case |
 
-### `GET /auth/me`
+`POST /cases/:id/evaluate` can return:
 
-Return the authenticated user/merchant identity and role context.
+```text
+riskScore
+recoverabilityScore
+expectedRecoveryMinor
+confidence
+uncertainty
+dataQuality
+modelVersion
+reason signals
+recommendedAction
+```
 
-## Dashboard and recovery cases
+## 4. Policy and audit
 
-### `GET /dashboard`
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/policy` | Read merchant recovery controls |
+| PUT | `/policy` | Update merchant recovery controls |
+| GET | `/audit` | Read merchant-scoped audit events |
+| GET | `/merchant` | Read merchant profile/configuration |
 
-Returns merchant-scoped recovery KPIs, visible cases and current policy information.
+Policy controls include recovery timing, quiet hours, attempt limits, automatic-contact caps, human-review thresholds, channels and consent-sensitive behavior.
 
-### `GET /cases`
+## 5. Razorpay integration
 
-List merchant-scoped recovery cases.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/integrations/razorpay` | Return connection status without secrets |
+| POST | `/integrations/razorpay` | Connect and verify merchant Razorpay credentials |
+| DELETE | `/integrations/razorpay` | Revoke stored Razorpay connection |
+| GET | `/integrations/razorpay/oauth/start` | Start future OAuth/partner flow |
+| GET | `/integrations/razorpay/oauth/callback` | OAuth callback |
 
-### `GET /cases/:id`
-
-Return one recovery case.
-
-### `POST /cases/:id/evaluate`
-
-Runs the policy-aware AI evaluation for a case. The response can contain recovery score, risk score, expected recovery value, confidence, uncertainty, model version, reason signals and the bounded recommendation.
-
-### `POST /cases/:id/execute`
-
-Re-loads the latest case, re-checks policy and attempts the recommended action when eligible. In production-oriented mode, Payment Link creation uses the verified merchant Razorpay connection.
-
-### `POST /cases/:id/stop`
-
-Stops future automation for a recovery case. Operator-facing mutations are role protected.
-
-### `POST /cases/:id/simulate-success`
-
-**Demo-only.** Injects a synthetic provider-success path to demonstrate the `recovered` state transition without moving real money. Returns `403` in production-oriented mode.
-
-## Policy and audit
-
-### `GET /policy`
-
-Return the merchant's current recovery guardrails.
-
-### `PUT /policy`
-
-Update merchant recovery controls. Typical controls include recovery window, quiet hours, attempt limit, automatic-contact cap, human-approval threshold and communication channels.
-
-### `GET /audit`
-
-Return the merchant-scoped audit trail.
-
-### `GET /merchant`
-
-Return merchant profile/configuration data available to the authenticated user.
-
-## Razorpay integration
-
-### `GET /integrations/razorpay`
-
-Return connection status without exposing provider secrets.
-
-### `POST /integrations/razorpay`
-
-Connect a merchant-controlled Razorpay account.
+Example connection payload shape:
 
 ```json
 {
@@ -108,75 +96,103 @@ Connect a merchant-controlled Razorpay account.
 }
 ```
 
-The backend verifies the supplied credentials before persisting the encrypted connection.
+The backend verifies the connection and encrypts provider secrets before persistence. Status responses do not return secret material.
 
-### `DELETE /integrations/razorpay`
-
-Revoke the stored Razorpay connection.
-
-### `GET /integrations/razorpay/oauth/start`
-### `GET /integrations/razorpay/oauth/callback`
-
-OAuth integration endpoints for a Technology Partner-style deployment.
-
-## Webhooks
+## 6. Razorpay webhooks
 
 ### `POST /webhooks/razorpay/:merchantId`
 
-Merchant-specific provider webhook endpoint.
+The endpoint is merchant-specific.
 
-Expected headers:
+Expected headers include:
 
 ```http
 X-Razorpay-Signature: <hmac-sha256>
-x-razorpay-event-id: <unique-provider-event-id>
+x-razorpay-event-id: <provider-event-id>
 ```
 
-The handler validates the signature against the raw request body, de-duplicates repeated deliveries, persists webhook processing state, and passes only verified events into the recovery workflow.
-
-Typical event roles in the implementation:
+Processing order:
 
 ```text
-payment.failed  → recovery opportunity
-payment.captured / order.paid → recovery verification
+raw request body
+      ↓
+signature verification
+      ↓
+deduplication
+      ↓
+persist webhook event
+      ↓
+correlate/create recovery case
+      ↓
+schedule recovery work
 ```
 
-## Phase 2 / operations
+Typical event roles:
 
-### `GET /phase2/queue`
+```text
+payment.failed / relevant failure event → recovery opportunity
+payment.captured / order.paid / other success event → recovery verification
+```
 
-Return background queue health.
+Only verified provider events can change provider-grounded recovery state.
 
-### `GET /phase2/experiments`
-### `POST /phase2/experiments`
-### `POST /phase2/experiments/:id/start`
-### `POST /phase2/experiments/:id/stop`
-### `GET /phase2/experiments/metrics`
+## 7. Operations and experiments
 
-Manage and inspect recovery experiments and outcome metrics.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/phase2/queue` | Queue health |
+| GET | `/phase2/experiments` | List experiments |
+| POST | `/phase2/experiments` | Create experiment |
+| POST | `/phase2/experiments/:id/start` | Start experiment |
+| POST | `/phase2/experiments/:id/stop` | Stop experiment |
+| GET | `/phase2/experiments/metrics` | Outcome metrics |
+| GET | `/phase2/cases/:caseId/communications` | Communication history |
 
-### `GET /phase2/cases/:caseId/communications`
+Experiments are persisted in MongoDB and assignments are deterministic by case identity.
 
-Return communication history for a recovery case.
+## 8. Demo-only endpoints
 
-## Demo endpoints
+These endpoints exist only to make the safe buildathon demo reproducible:
 
-### `POST /demo/reset`
+| Method | Endpoint | Boundary |
+|---|---|---|
+| POST | `/demo/reset` | Synthetic cohort reset; blocked outside demo mode |
+| POST | `/cases/:id/simulate-success` | Synthetic recovery-success transition; blocked outside demo mode |
 
-**Demo-only.** Reset/load the reproducible synthetic cohort. Blocked in production-oriented mode.
+No real money is moved by the demo simulator.
 
-## Health
+## 9. Health
 
 ### `GET /health`
 
-Return service/deployment mode and basic health information.
+Returns basic service health and deployment-mode information.
 
-## Security invariants
+## 10. Security and consistency invariants
 
-The important server-side invariants are:
+The intended server-side flow is:
 
 ```text
-Authentication → merchant scoping → policy → AI decision → policy re-check → side effect → provider verification
+authenticate
+   ↓
+merchant scope
+   ↓
+policy pre-filter
+   ↓
+AI / decisioning
+   ↓
+execution-time policy re-check
+   ↓
+idempotent side effect
+   ↓
+verified provider outcome
 ```
 
-No frontend control is treated as an authorization boundary. Provider secrets are never returned by the integration status endpoint. Demo-only mutation endpoints are unavailable in production-oriented mode.
+Important guarantees:
+
+- frontend controls are not authorization boundaries
+- invalid webhook signatures are rejected
+- repeated provider events are deduplicated
+- terminal/stopped cases are not blindly executed again
+- provider credentials are not returned by status APIs
+- a prediction or Payment Link creation is not counted as recovered revenue
+- demo-only mutation endpoints are unavailable in production-oriented mode
