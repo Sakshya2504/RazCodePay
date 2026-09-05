@@ -15,16 +15,17 @@ export async function executeRecoveryAttempt(merchantId, caseId) {
   if (!policy.allowedActions.includes(requestedAction)) throw new Error(`Policy denied ${requestedAction}: ${policy.reasons.join(', ') || 'not allowed'}`);
 
   const sequence = (current.attemptCount || 0) + 1;
-  const idempotencyKey = crypto.createHash('sha256').update(`${caseId}:${requestedAction}:${sequence}`).digest('hex');
+  const actionKey = crypto.createHash('sha256').update(`${caseId}:${requestedAction}:${sequence}`).digest('hex');
+  const idempotencyKey = actionKey.slice(0, 36);
   if (current.attempts?.some((attempt) => attempt.idempotencyKey === idempotencyKey)) return { case: current, duplicate: true };
 
   let attempt = { action: requestedAction, channel: 'email', status: 'simulated', idempotencyKey, scheduledFor: new Date(), sentAt: new Date() };
 
   if (requestedAction === 'create_payment_link' && !config.demoMode) {
-    const link = await createPaymentLink({ merchantId, amountMinor: current.amountMinor, currency: current.currency, description: `Payment recovery for ${current.type.replaceAll('_', ' ')}`, customer: current.customer, expireBy: new Date(Date.now() + 48 * 3600000), idempotencyKey });
+    const link = await createPaymentLink({ merchantId, amountMinor: current.amountMinor, currency: current.currency, description: `Payment recovery for ${current.type.replaceAll('_', ' ')}`, customer: current.customer, expireBy: new Date(Date.now() + 48 * 3600000), referenceId: `RCP-${idempotencyKey}`.slice(0, 40) });
     attempt = { ...attempt, status: 'created', providerReference: link.id, paymentLink: link.short_url || null };
   } else if (requestedAction === 'send_payment_reminder' || config.demoMode) {
-    attempt = { ...attempt, status: 'test_mode', providerReference: `demo-message-${idempotencyKey.slice(0, 12)}` };
+    attempt = { ...attempt, status: 'test_mode', providerReference: `demo-message-${actionKey.slice(0, 12)}` };
   } else {
     attempt = { ...attempt, status: 'queued_for_operator' };
   }
