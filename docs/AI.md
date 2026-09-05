@@ -1,83 +1,160 @@
-# AI implementation
+# AI and Decision Intelligence
 
-## Decision pipeline
+RazCodePay separates **prediction**, **reasoning**, and **authorization**.
 
-RazCodePay uses an interpretable local scoring model, optional LLM reasoning, and a deterministic policy layer.
+> **AI recommends. Policy controls. Executor acts. Razorpay verifies.**
+
+## 1. Decision pipeline
 
 ```text
-provider facts
-   │
-   ├── local-recovery-v2
-   │      ├── calibrated recoverability score
-   │      ├── operational risk score
-   │      ├── expected recovery value
-   │      ├── confidence / uncertainty
-   │      └── feature-level signals
-   │
-   ├── optional OpenAI LLM
-   │      └── structured reasoning over allowed actions
-   │
-   └── deterministic policy
-          └── final action set + execution re-check
+Verified provider / case facts
+          ↓
+Feature construction
+          ↓
+local-recovery-v2
+   ├─ risk score
+   ├─ recoverability score
+   ├─ expected recovery value
+   ├─ confidence / uncertainty
+   └─ feature signals
+          ↓
+Policy-approved action set
+          ↓
+Decision engine
+          ├─ local deterministic recommendation
+          └─ optional LLM reasoning
+          ↓
+Execution-time policy re-check
+          ↓
+Provider / communication action
+          ↓
+Verified Razorpay outcome
 ```
 
-## Local model
+## 2. Local recovery model
 
-`server/src/ai/riskModel.js` is an interpretable hybrid scorer. It is deliberately small and deterministic enough to audit in a hackathon review; it does **not** claim to be trained on proprietary production labels.
+The implementation lives at `server/src/ai/riskModel.js` and is versioned as:
 
-The model combines:
+```text
+local-recovery-v2
+```
 
-- failure-code priors and recovery type priors
-- event freshness with time-decay behavior
-- customer intent and contact reachability
-- consent availability
+The model is intentionally deterministic and interpretable for the buildathon. It does **not** claim to be trained on proprietary production labels.
+
+### Features
+
+The scorer derives signals from:
+
+- failure-code priors
+- recovery-type priors
+- event freshness / age
+- customer intent
+- contact reachability
+- communication consent
 - amount opportunity
-- prior-attempt pressure
 - provider-context completeness
+- previous-attempt pressure
 
-It exposes `riskScore`, `recoverabilityScore`, `expectedRecoveryMinor`, `confidence`, `uncertainty`, `dataQuality`, model version and feature signals. This makes the recommendation explainable instead of presenting an opaque probability.
+### Outputs
 
-## Action selection
+Each evaluation can expose:
 
-The local decision layer chooses only from the policy-approved action set. It considers both recoverability and expected recovered value, while routing high-value, low-confidence or high-uncertainty cases toward human review.
+```text
+riskScore
+recoverabilityScore
+expectedRecoveryMinor
+confidence
+uncertainty
+dataQuality
+modelVersion
+features
+signals
+```
 
-Known failure profiles can also steer the action toward a payment-method update rather than a generic reminder when the provider evidence supports that choice.
+`expectedRecoveryMinor` is an estimated opportunity value used to prioritize cases. It is **not** the amount recovered and is never used to close a case.
 
-## LLM mode
+## 3. Decision logic
 
-Set:
+The decision engine only considers actions that survive deterministic policy evaluation. The current action vocabulary is:
+
+```text
+wait
+send_payment_reminder
+create_payment_link
+request_payment_method_update
+create_human_task
+stop_case
+```
+
+Decisioning considers recovery potential, transaction opportunity, failure context and safety boundaries. High-value, low-confidence or otherwise uncertain cases can be routed toward human review instead of forcing automation.
+
+Failure evidence can also influence the recommendation toward a payment-method update when that is more appropriate than a generic reminder.
+
+## 4. Optional LLM reasoning
+
+LLM reasoning is optional. It is configured through:
 
 ```env
 AI_API_KEY=...
 AI_MODEL=gpt-4o-mini
 ```
 
-The LLM receives normalized case facts plus the already-approved action set. The prompt forbids inventing discounts, provider operations, deadlines, payment links, or customer facts.
+The LLM receives normalized case facts and the **already policy-approved action set**. It is explicitly constrained from inventing:
 
-The response is accepted only when its action is in the allowed set. Invalid output or API failure falls back to the local model.
+- arbitrary provider operations
+- discounts
+- payment links
+- deadlines
+- customer facts
+- actions outside the approved set
 
-## Guardrails
+The application validates the returned action. If the LLM is unavailable, times out, produces malformed output or proposes a disallowed action, the deterministic local path remains the safe fallback.
 
-The LLM and local model never override deterministic merchant policy. Consent, quiet hours, attempt caps, value thresholds and recovery-window rules are enforced before planning and checked again immediately before execution.
+## 5. Why the hybrid design
 
-The recovery grace period is merchant-configurable. A new failure is placed into a protected waiting window before customer-facing action is eligible.
+A payment-recovery system needs more than a high score. It needs to explain why a case was prioritized and prevent a model from becoming an unrestricted operator.
 
-## What to show judges
+RazCodePay therefore separates responsibilities:
 
-Open **AI decisions** and inspect a case. Point out:
+| Layer | Responsibility |
+|---|---|
+| Local model | Predict recovery potential and risk |
+| Decision engine | Select a bounded next action |
+| LLM | Optional language-level reasoning/explanation |
+| Policy engine | Authorize or block actions |
+| Executor | Perform approved side effects |
+| Razorpay | Confirm monetary outcome |
 
-1. recoverability and risk
-2. expected recovery value
-3. confidence, uncertainty and data quality
-4. feature-level reason codes
-5. the selected action and model version
-6. the policy boundaries shown in Guardrails
+## 6. Guardrails around AI
 
-The core operating contract remains:
+Policy is evaluated before planning and again immediately before execution.
 
-```text
-AI recommends
-Policy authorizes
-Executor acts
-Razorpay verifies
-```
+Relevant controls include:
+
+- communication consent
+- recovery window
+- grace period
+- quiet hours
+- maximum attempts
+- automatic-contact cap
+- human-approval threshold
+- allowed channels
+- terminal case state
+
+An AI recommendation therefore cannot bypass merchant controls.
+
+## 7. How to explain it to judges
+
+A good 20-second explanation is:
+
+> “We use a deterministic, interpretable recovery model to estimate risk, recoverability and expected recovery value. An optional LLM can add reasoning, but it only sees actions already approved by deterministic merchant policy. The executor re-checks policy before acting, and we count recovery only after Razorpay verifies success.”
+
+Then open **Decision Intelligence** and point to:
+
+1. recoverability
+2. risk
+3. expected recovery value
+4. confidence and uncertainty
+5. feature-level reason signals
+6. model version
+7. the Policy & Controls screen
