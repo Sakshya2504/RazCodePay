@@ -2,38 +2,40 @@
 
 This document defines the boundary between the buildathon implementation and a public Live Mode deployment.
 
-## 1. Reference architecture
+## 1. Current buildathon architecture
 
 ```text
 Browser
-  ↓ HTTPS
-React / Vite console
-  ↓ Bearer token
+  ↓ HTTPS/local dev
+React + Vite merchant console
+  ↓ Bearer token in production-oriented mode
 Express API
-  ├── MongoDB (system of record)
-  ├── Redis / BullMQ (background work)
-  ├── Recovery model + policy engine
+  ├── MongoDB — system of record
+  ├── Redis + BullMQ — background work
+  ├── local-recovery-v2 + policy engine
   ├── Razorpay adapter
-  └── Communication adapter
+  └── communication adapter
 
 Razorpay
   ↓ signed webhook
-Webhook gateway
+Webhook verification
   ↓ verified event
-Recovery verification
+Recovery case / outcome
   ↓
-MongoDB recovery outcome
+MongoDB
 ```
 
-## 2. Required production-oriented configuration
+## 2. Configuration
+
+Production-oriented mode:
 
 ```env
 DEMO_MODE=false
-MONGODB_URI=<managed-or-hardened-mongodb-uri>
+MONGODB_URI=<mongodb-uri>
 REDIS_URL=<redis-uri>
 JWT_SECRET=<long-random-secret>
-ENCRYPTION_KEY=<32-byte-secret-or-provider-compatible-key>
-ALLOWED_ORIGIN=https://<your-console-domain>
+ENCRYPTION_KEY=<secret-key-material>
+ALLOWED_ORIGIN=https://<console-domain>
 ```
 
 Optional AI:
@@ -53,97 +55,101 @@ SMTP_PASSWORD=<smtp-password>
 MAIL_FROM=<verified-sender>
 ```
 
-Never commit these values to source control.
+Never commit these values.
 
 ## 3. MongoDB
 
-MongoDB is the durable application system of record. It stores merchant identity/configuration, provider connections, recovery cases, webhook events, audit events, experiments, communications and recovery outcomes.
+MongoDB stores merchant identity/configuration, provider connections, recovery cases, webhook events, audit events, experiments, communications and recovery outcomes.
 
 For a public deployment:
 
 - use managed or hardened MongoDB
-- enable backups and point-in-time recovery where available
+- configure backups and test restores
 - restrict network access
-- use least-privilege database credentials
-- monitor storage, latency and connection usage
+- use least-privilege credentials
+- monitor latency, storage and connections
 
-## 4. Redis / BullMQ
+## 4. Redis and BullMQ
 
-Redis is infrastructure for asynchronous work, not the business database.
+Redis is queue infrastructure only. BullMQ provides delayed jobs, retries and worker execution.
 
-The worker uses BullMQ for delayed/retried recovery jobs. Business state must remain reconstructable from MongoDB and provider events.
-
-For a public deployment:
-
-- use authenticated Redis access
-- isolate Redis from the public network
-- monitor queue depth and failed jobs
-- retain enough failure history for incident debugging
-
-## 5. Authentication and secrets
-
-Production-oriented mode authenticates merchants and applies role checks. Passwords are bcrypt-hashed and provider credentials are encrypted before MongoDB persistence.
+Business state remains in MongoDB and provider events.
 
 For public deployment:
 
-- place secrets in a dedicated secret manager
-- rotate JWT and encryption secrets according to an operational policy
-- protect authentication endpoints with rate limits and monitoring
-- use HTTPS everywhere
-- use secure cookie/token storage appropriate to the final frontend architecture
+- authenticate Redis connections
+- keep Redis off the public network
+- monitor queue depth and failed jobs
+- retain enough operational history for debugging
 
-## 6. Razorpay connection
+## 5. Authentication and secrets
 
-For the current buildathon workflow, an owner-controlled merchant can connect Razorpay Test Mode using API credentials. The application verifies the connection before reporting it as healthy and stores the secret material encrypted.
+Production-oriented mode uses authenticated merchant users and roles. Passwords are bcrypt-hashed. Provider credentials are encrypted before MongoDB persistence.
 
-For a multi-merchant Technology Partner platform, the intended long-term onboarding mechanism is the provider-approved OAuth flow rather than asking merchants to disclose API-key secrets.
+Before public launch:
+
+- use a dedicated secret manager
+- rotate secrets under an operational policy
+- protect authentication endpoints with rate limiting/monitoring
+- enforce HTTPS
+- finalize browser token/session storage for the deployed frontend
+
+## 6. Razorpay onboarding
+
+The demonstrated hackathon path is a merchant-controlled Razorpay API-key connection in Test Mode.
+
+OAuth authorization-code support exists for the future Technology Partner-style multi-merchant model. The public multi-merchant onboarding flow should use the provider-approved model rather than collecting merchant API secrets unnecessarily.
 
 ## 7. Webhooks
 
-Use a stable HTTPS endpoint:
+Use a stable HTTPS route:
 
 ```text
-POST https://<your-domain>/api/webhooks/razorpay/<merchant-id>
+POST https://<domain>/api/webhooks/razorpay/<merchant-id>
 ```
 
-The handler must:
+Required processing order:
 
-1. receive the raw request body
-2. validate the provider signature
-3. identify/de-duplicate the provider event
-4. persist the webhook record
-5. apply only verified events to the recovery state machine
+```text
+raw body
+  ↓
+signature verification
+  ↓
+deduplication
+  ↓
+persist event
+  ↓
+case correlation/update
+  ↓
+recovery processing
+```
 
-Test duplicate delivery and malformed/invalid signatures before Live Mode.
+Before Live Mode, test invalid signatures, duplicate delivery and out-of-order events.
 
 ## 8. Recovery execution
 
-Before a side effect, the executor reloads the current case and evaluates current merchant policy.
-
-The action must satisfy:
+Before any side effect:
 
 ```text
-authenticated merchant
-        ↓
+authentication
+    ↓
 merchant-scoped case
-        ↓
+    ↓
 policy-approved action
-        ↓
-execution-time re-check
-        ↓
+    ↓
+execution-time policy re-check
+    ↓
 idempotent side effect
-        ↓
-persisted attempt/provider reference
+    ↓
+persisted attempt/reference
 ```
 
-A successful API response from Razorpay is still not equivalent to recovered revenue.
+A successful provider API response is not the same as recovered revenue.
 
 ## 9. Recovery verification
 
-The monetary metric is provider-grounded:
-
 ```text
-Payment Link / recovery action
+Recovery action / Payment Link
           ↓
 customer completes payment
           ↓
@@ -151,59 +157,62 @@ verified Razorpay success event
           ↓
 case correlation
           ↓
-recovered outcome
+RecoveryOutcome
+          ↓
+recovered amount attributed
+          ↓
+case = recovered
 ```
 
-This prevents the dashboard from counting attempted interventions as revenue recovered.
+This is the monetary truth boundary used by the application.
 
 ## 10. Go-live checklist
 
 ### Application
 
 - [ ] `DEMO_MODE=false`
-- [ ] production secrets supplied through a secret manager
+- [ ] secrets supplied through a secret manager
 - [ ] HTTPS enforced
-- [ ] correct CORS origin configured
-- [ ] authentication and role permissions tested
+- [ ] CORS restricted to the real console domain
+- [ ] authentication/RBAC tested
 - [ ] rate limiting and security headers verified
 
 ### Data and queues
 
 - [ ] managed/hardened MongoDB configured
-- [ ] backups tested
+- [ ] backups and restores tested
 - [ ] Redis access restricted
 - [ ] worker monitoring configured
-- [ ] retry/failure behavior validated
+- [ ] retries and failure handling validated
 
 ### Razorpay
 
-- [ ] Test Mode integration completed
-- [ ] merchant webhook endpoint configured
-- [ ] signature validation tested
-- [ ] duplicate and out-of-order events tested
-- [ ] `payment.failed` → case creation verified
-- [ ] Payment Link → success event → recovery attribution verified
-- [ ] required Technology Partner/OAuth onboarding completed for the multi-merchant model
+- [ ] Test Mode integration verified
+- [ ] stable webhook endpoint configured
+- [ ] signature verification tested
+- [ ] duplicate/out-of-order events tested
+- [ ] `payment.failed` case creation verified
+- [ ] Payment Link → provider success → recovery attribution verified
+- [ ] partner/OAuth onboarding completed for the intended multi-merchant model
 
 ### Communications
 
 - [ ] authenticated SMTP/provider configured
-- [ ] delivery/bounce/complaint handling available before broad customer outreach
+- [ ] delivery/bounce/complaint handling available
 - [ ] templates reviewed
-- [ ] suppression/consent rules tested
+- [ ] consent/suppression rules tested
 
 ### Security and operations
 
-- [ ] dependency audit completed
-- [ ] vulnerability remediation completed
-- [ ] penetration/security review completed
-- [ ] logs and metrics centralized
+- [ ] dependency audit and remediation complete
+- [ ] penetration/security review complete
+- [ ] centralized logs/metrics configured
 - [ ] alerts and incident runbooks prepared
-- [ ] secret rotation procedure documented
-- [ ] restore-from-backup procedure tested
+- [ ] secret rotation documented
+- [ ] restore procedure tested
 
-## 11. Current buildathon boundary
+## 11. Boundary statement
 
-The repository is ready to demonstrate the complete workflow locally and in Razorpay Test Mode. It is intentionally not described as an already-operated public payment-recovery SaaS.
+The buildathon artifact is a complete, provider-grounded recovery control plane demonstrated locally and in Razorpay Test Mode. It is **production-oriented**, not presented as an already-operated public Live Mode payment-recovery SaaS.
 
-The remaining production work above is operational hardening, provider onboarding, observability and security—not a requirement to understand the core recovery architecture demonstrated by this submission.
+The remaining Live Mode work is operational hardening, security review, provider onboarding, observability, messaging reliability and production outcome calibration.
