@@ -14,6 +14,7 @@ const merchantSchema = new mongoose.Schema({
     maxAttemptsPerCase: { type: Number, default: 2 },
     maxAutoContactMinor: { type: Number, default: 500000 },
     humanApprovalAboveMinor: { type: Number, default: 100000 },
+    graceMinutes: { type: Number, default: 30 },
   },
 }, { timestamps: true, versionKey: false });
 
