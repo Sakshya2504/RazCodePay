@@ -2,20 +2,22 @@
 
 **Razorpay AI Buildathon · Track 03**
 
-RazCodePay is a merchant-facing recovery platform that detects payment failures, predicts recovery potential, recommends the safest high-value intervention, executes only inside deterministic policy boundaries, and verifies recovered money from Razorpay events.
+RazCodePay is a merchant-facing recovery platform that detects payment failures, scores recovery potential, estimates expected recovered value, recommends the safest high-value intervention, executes only inside deterministic policy boundaries, and verifies recovered money from Razorpay events.
 
 ## What is production-ready in this repository
 
 - **MongoDB is the application system of record** in `DEMO_MODE=false`.
 - **Redis/BullMQ is used only for background jobs**; it is not the application database.
-- **No Docker dependency** is required for local development. Run MongoDB and Redis as native Windows services.
+- **No Docker dependency** is required for local development. Run MongoDB and Redis-compatible services as native Windows services.
 - **Merchant authentication** with bcrypt password hashing, JWT access tokens and owner/admin/operator/viewer roles.
 - **Encrypted provider credentials** using AES-256-GCM before storage in MongoDB.
 - **Real Razorpay adapter** using Basic Auth for merchant API keys and real Payment Link creation.
 - **Merchant-specific webhook secrets** with HMAC-SHA256 verification over the raw body.
 - **Idempotent webhook ingestion** using provider event IDs or deterministic payload hashes.
-- **AI/ML layer** with an interpretable local recovery model plus optional OpenAI reasoning, constrained by policy.
+- **AI/ML layer** with an interpretable local recovery model v2 plus optional OpenAI reasoning, constrained by policy.
+- **Expected-value prioritization** so operators see revenue opportunity, not just the largest transaction.
 - **Policy enforcement twice**: once before planning and again immediately before execution.
+- **Merchant-configurable recovery grace period** before customer-facing actions are eligible.
 - **Provider-grounded recovery attribution**: an AI decision or a created Payment Link never counts as recovered revenue by itself.
 - **Safe demo mode** that renders without MongoDB or provider secrets and never calls live APIs.
 
@@ -32,8 +34,13 @@ Recovery Case ◄────────────── Audit Event Store
    │
    ├── Policy pre-filter
    │
-   ├── Local recovery model
-   │      └── optional LLM reasoning
+   ├── Local recovery model v2
+   │      ├── recoverability
+   │      ├── risk
+   │      ├── expected recovery value
+   │      └── confidence / uncertainty
+   │
+   ├── optional LLM reasoning
    │
    ├── Policy re-check
    │
@@ -55,27 +62,9 @@ Recovered case + attributed amount
 
 ## Local development without Docker
 
-Install **MongoDB Community Server** and **Redis-compatible Redis service** such as Memurai on Windows, then make sure both services are running.
+Install **MongoDB Community Server** and a **Redis-compatible service such as Memurai** on Windows, then make sure both services are running.
 
-### Verify MongoDB
-
-```powershell
-mongosh
-```
-
-MongoDB should be reachable at `127.0.0.1:27017`.
-
-### Verify Redis
-
-```powershell
-redis-cli ping
-```
-
-Expected response:
-
-```text
-PONG
-```
+MongoDB should be reachable at `127.0.0.1:27017` and Redis at `127.0.0.1:6379`.
 
 ### Terminal 1 — API
 
@@ -89,8 +78,6 @@ npm run dev
 API: `http://127.0.0.1:3000`
 
 Health: `http://127.0.0.1:3000/api/health`
-
-The default `.env.example` keeps `DEMO_MODE=true`, so MongoDB and Redis are optional for the demo UI.
 
 ### Terminal 2 — background worker
 
@@ -111,7 +98,7 @@ npm run dev
 
 Console: `http://127.0.0.1:5173`
 
-## Real deployment
+## Real merchant setup
 
 Set these values in `server/.env`:
 
@@ -121,22 +108,23 @@ MONGODB_URI=mongodb://127.0.0.1:27017/razcodepay
 REDIS_URL=redis://127.0.0.1:6379
 JWT_SECRET=<long-random-secret>
 ENCRYPTION_KEY=<long-random-secret>
-ALLOWED_ORIGIN=https://your-console.example.com
+ALLOWED_ORIGIN=http://127.0.0.1:5173
 AI_API_KEY=<optional>
+AI_MODEL=gpt-4o-mini
 ```
 
 Create an account through the production console. The backend creates a merchant workspace and owner account in MongoDB.
 
 ### Connect Razorpay
 
-Use the production Razorpay connection controls in the merchant console. Razorpay OAuth is preferred for a multi-merchant Technology Partner integration; direct API-key connection remains available as a fallback.
+For a merchant-owned integration, direct Test Mode API-key connection is supported. Razorpay OAuth remains the preferred path for a Technology Partner platform serving multiple merchants.
 
 ### Webhook
 
 Configure the merchant-specific endpoint:
 
 ```text
-POST https://your-domain.example.com/api/webhooks/razorpay/<merchant-mongodb-id>
+POST https://your-public-host.example.com/api/webhooks/razorpay/<merchant-mongodb-id>
 ```
 
 Required header:
@@ -153,7 +141,9 @@ x-razorpay-event-id: <unique-event-id>
 
 ## AI system
 
-Every case is scored on failure profile, event freshness, customer intent, contact consent, amount exposure and prior-attempt pressure. The local model outputs risk, recoverability and feature signals. The optional LLM receives only the already-approved action set.
+Every case is scored on failure profile, recovery type, event freshness, customer intent, contact reachability, consent, amount opportunity, provider context and prior-attempt pressure. The local model outputs risk, recoverability, expected recovery value, confidence, uncertainty and feature signals.
+
+The optional LLM receives only normalized case facts and the action set already approved by deterministic policy. It cannot create arbitrary provider operations.
 
 The important boundary is:
 
