@@ -2,115 +2,146 @@
 
 **Razorpay AI Buildathon · Track 03**
 
-RazCodePay is an AI-assisted revenue recovery control plane for merchants using Razorpay. It detects payment failures, scores recovery potential, estimates expected recovery value, recommends a bounded next action, executes only inside deterministic merchant controls, and credits recovered revenue only after verified provider success.
-
 > **AI recommends. Policy controls. Executor acts. Razorpay verifies.**
 
-## Why RazCodePay
+RazCodePay is an AI-assisted revenue recovery control plane for merchants using Razorpay. It turns a payment failure into an auditable workflow that identifies recovery opportunity, explains risk, recommends a bounded next action, executes only within merchant-defined controls, and credits recovered revenue only after a verified Razorpay success event.
 
-Payment failure is not the end of a transaction. A merchant still needs to decide whether a case is worth recovering, what intervention is appropriate, when it is safe to contact the customer, and whether the intervention actually recovered money.
+## The problem
 
-RazCodePay turns that sequence into an auditable workflow:
+A failed payment does not necessarily mean lost revenue. The merchant still needs to decide whether recovery is worthwhile, what intervention fits the failure, when the customer can be contacted, and whether the intervention actually produced a successful payment.
+
+RazCodePay turns that decision chain into one controlled loop:
 
 ```text
 detect → diagnose → predict → decide → policy-check → execute → verify
 ```
 
-## What is implemented
+## What we built
 
-### Merchant platform
-- Merchant registration and login in production mode.
-- JWT-based authenticated sessions with owner/admin/operator/viewer roles.
-- Merchant-scoped application data in MongoDB.
-- Merchant profile menu with account visibility and sign-out.
+### Merchant workspace
+
+- Registration and login with JWT-based authentication.
+- `owner`, `admin`, `operator`, and `viewer` roles.
+- Merchant-scoped MongoDB data.
+- Command Center, Recovery Cases, Decision Intelligence, Policy & Controls, Operations, and account/profile controls.
+- Profile menu with merchant identity, Razorpay connection status, and sign-out.
 
 ### Razorpay integration
-- Merchant-owned Razorpay API-key connection for Test Mode and controlled deployments.
-- Encrypted provider credentials using AES-256-GCM before MongoDB storage.
+
+- Merchant-controlled Razorpay API-key connection for Test Mode.
+- Provider credentials encrypted with AES-256-GCM before persistence.
 - Merchant-specific webhook endpoint.
-- HMAC-SHA256 webhook verification over the raw request body.
-- Event de-duplication using the Razorpay event ID when available, with deterministic fallback hashing.
+- Raw-body HMAC-SHA256 webhook verification.
+- Provider event de-duplication with deterministic fallback hashing.
 - Real Razorpay Payment Link creation for eligible cases.
-- Provider-grounded recovery attribution: an AI decision, email, or Payment Link does **not** count as recovered revenue on its own.
+- Recovery attribution based on provider-confirmed success rather than predictions or attempted actions.
 
-### AI and decisioning
-- Deterministic, interpretable `local-recovery-v2` scoring model.
-- Recovery, risk, confidence, uncertainty, data-quality and expected-recovery-value outputs.
-- Feature-level signals for judge/operator explainability.
-- Expected-value prioritization instead of amount-only ranking.
-- Optional OpenAI reasoning over a policy-approved action set.
-- Invalid or unavailable LLM output falls back to deterministic local decisioning.
+### AI and decision intelligence
 
-### Safety and operations
-- Deterministic merchant guardrails for recovery window, quiet hours, grace period, attempt limits, contact caps and human-review thresholds.
-- Policy checked before planning and re-checked immediately before execution.
-- Idempotent recovery actions and duplicate-event handling.
-- Audit events, communication history and recovery outcomes.
-- Redis/BullMQ for asynchronous jobs only; MongoDB remains the application system of record.
-- Safe demo mode with synthetic data and no provider side effects.
+- Deterministic, interpretable `local-recovery-v2` model.
+- Recoverability, risk, confidence, uncertainty, data quality, and expected recovery opportunity.
+- Feature-level signals for operator explanation.
+- Expected-value ranking to prioritize cases.
+- Optional OpenAI reasoning constrained to the action set already approved by merchant policy.
+- Deterministic fallback when LLM output is unavailable or invalid.
 
-## Architecture
+### Guardrails and operations
+
+- Recovery window and grace period.
+- Quiet hours.
+- Maximum attempts per case.
+- Automatic-contact cap.
+- Human-review threshold.
+- Consent and channel checks.
+- Execution-time policy re-check.
+- Idempotent actions and duplicate-event handling.
+- Audit events, communication history, experiments, recovery outcomes, retries, and queue health.
+
+**MongoDB is the application system of record. Redis/BullMQ is queue infrastructure only.**
+
+## End-to-end architecture
 
 ```mermaid
 flowchart LR
-    UI[React + Vite\nMerchant Console] --> AUTH[JWT Auth + RBAC]
-    AUTH --> API[Express API]
-    API --> DB[(MongoDB\nSystem of Record)]
-
     RP[Razorpay] -->|signed webhook| WH[Webhook Gateway]
-    WH --> VERIFY[HMAC Verification]
-    VERIFY --> EVENTS[Webhook Events]
-    EVENTS --> CASE[Recovery Case]
-    CASE --> DB
+    WH --> VERIFY[HMAC + Deduplication]
+    VERIFY --> DB[(MongoDB\nSystem of Record)]
+    DB --> CASE[Recovery Case]
 
-    API --> POLICY[Policy Pre-filter]
     CASE --> MODEL[local-recovery-v2]
-    MODEL --> SCORE[Risk + Recoverability\nExpected Value + Uncertainty]
-    SCORE --> DECIDE[Bounded Decision Engine]
-    DECIDE --> RECHECK[Policy Re-check]
+    MODEL --> DECIDE[Bounded Decision Engine]
+    POLICY[Merchant Policy] --> DECIDE
+    DECIDE --> RECHECK[Execution-time Policy Re-check]
     RECHECK --> EXEC[Recovery Executor]
     EXEC --> RPAPI[Razorpay API]
     EXEC --> MAIL[SMTP / Recovery Communication]
-    RPAPI --> LINK[Payment Link]
+
     RP -->|verified success| VERIFY2[Recovery Verification]
     VERIFY2 --> DB
 
-    API --> QUEUE[Redis + BullMQ]
-    QUEUE --> WORKER[Recovery Worker]
+    UI[React + Vite\nMerchant Console] --> AUTH[JWT + RBAC]
+    AUTH --> API[Express API]
+    API --> DB
+    API <--> Q[Redis + BullMQ]
+    Q --> WORKER[Recovery Worker]
     WORKER --> DB
+
+    MODEL -. optional reasoning .-> LLM[Optional LLM]
+    LLM -. approved actions only .-> DECIDE
 ```
 
-### Core data flow
+## Core recovery flow
 
-1. Razorpay emits a payment event.
-2. The webhook gateway validates the merchant-specific signature and de-duplicates the event.
-3. A recovery case is created or updated in MongoDB.
-4. The local recovery model computes interpretable signals and expected recovery value.
-5. Deterministic policy removes disallowed actions.
-6. The decision engine selects one bounded action; optional LLM reasoning can refine the explanation/action within the already-approved set.
-7. The executor re-checks current policy immediately before any side effect.
-8. A Payment Link or configured recovery communication may be issued.
+1. Razorpay emits a failure event.
+2. RazCodePay verifies the merchant-specific webhook signature and de-duplicates the event.
+3. The verified event creates or updates a recovery case in MongoDB.
+4. `local-recovery-v2` scores risk, recoverability, confidence, uncertainty, data quality, and expected recovery opportunity.
+5. Merchant policy removes actions that are not allowed.
+6. The decision engine chooses one bounded action. Optional LLM reasoning may refine the action/explanation only inside that approved set.
+7. The executor reloads the current case and re-checks policy immediately before a side effect.
+8. An eligible case may create a Razorpay Payment Link or send a configured recovery communication.
 9. A later verified Razorpay success event is required before the case becomes `recovered` and recovered amount is attributed.
+
+## Case lifecycle
+
+```text
+DETECTED
+   ↓
+ENRICHED
+   ↓
+AWAITING_WINDOW
+   ↓
+PLANNED
+   ↓
+EXECUTING
+   ↓
+MONITORING ───────► RECOVERED
+   │
+   ├───────────────► STOPPED
+   └───────────────► EXPIRED
+```
+
+`recovered` is a provider-confirmed state. A model prediction, email, or created Payment Link is not itself a recovery event.
 
 ## Technology stack
 
-| Layer | Technology | Responsibility |
+| Layer | Technology | Role |
 |---|---|---|
-| Web | React + Vite | Merchant command center and operator workflows |
-| API | Node.js + Express | Auth, cases, policy, AI orchestration and provider integration |
-| Database | MongoDB + Mongoose | System of record |
-| Queue | Redis + BullMQ | Background recovery jobs, retries and delayed work |
-| AI | local-recovery-v2 + optional OpenAI | Recovery scoring and bounded reasoning |
-| Provider | Razorpay REST API + webhooks | Payment actions and monetary truth |
+| Web | React + Vite | Merchant console and operator workflow |
+| API | Node.js + Express | Authentication, orchestration and provider integration |
+| Database | MongoDB + Mongoose | Durable application state |
+| Queue | Redis + BullMQ | Delayed work, retries and worker execution |
+| AI | `local-recovery-v2` + optional OpenAI | Recovery scoring and bounded reasoning |
+| Provider | Razorpay REST API + webhooks | Payment action and monetary truth |
 | Email | Nodemailer / SMTP | Recovery communication |
 
-## Local development (Windows, no Docker)
+## Local setup — Windows, no Docker
 
-RazCodePay does **not** require Docker.
+RazCodePay does not require Docker for the current buildathon workflow.
 
-Install MongoDB Community Server and a Redis-compatible service such as Memurai. Start both locally.
+Start a local MongoDB instance and a Redis-compatible service such as Memurai.
 
-Expected local addresses:
+Expected services:
 
 ```text
 MongoDB  →  127.0.0.1:27017
@@ -119,7 +150,7 @@ API      →  127.0.0.1:3000
 Web      →  127.0.0.1:5173
 ```
 
-### Terminal 1 — API
+### API
 
 ```powershell
 cd server
@@ -128,14 +159,14 @@ copy .env.example .env
 npm run dev
 ```
 
-### Terminal 2 — worker
+### Worker
 
 ```powershell
 cd server
 npm run worker
 ```
 
-### Terminal 3 — web console
+### Web console
 
 ```powershell
 cd web
@@ -151,101 +182,83 @@ GET http://127.0.0.1:3000/api/health
 
 ## Environment
 
-Production-oriented mode uses:
+For production-oriented mode:
 
 ```env
 DEMO_MODE=false
 MONGODB_URI=mongodb://127.0.0.1:27017/razcodepay
 REDIS_URL=redis://127.0.0.1:6379
 JWT_SECRET=<long-random-secret>
-ENCRYPTION_KEY=<long-random-secret>
+ENCRYPTION_KEY=<secret-key-material>
 ALLOWED_ORIGIN=http://127.0.0.1:5173
 AI_API_KEY=<optional>
 AI_MODEL=gpt-4o-mini
 ```
 
-For SMTP-backed recovery email, configure the SMTP variables documented in [`docs/PRODUCTION.md`](./docs/PRODUCTION.md).
+SMTP is optional. See [`docs/PRODUCTION.md`](./docs/PRODUCTION.md) for the full configuration boundary.
 
-**Never commit `.env` files, API keys, webhook secrets, JWT secrets, encryption keys or SMTP passwords.**
+**Never commit `.env`, API keys, webhook secrets, JWT secrets, encryption keys, SMTP passwords, or LLM provider secrets.**
 
-## Razorpay Test Mode workflow
+## Razorpay Test Mode demo
 
-For the hackathon demo, use Razorpay Test Mode:
+The intended judge demo uses Razorpay Test Mode:
 
 ```text
-Razorpay Test Payment
-        ↓
+Login
+  ↓
+Merchant workspace
+  ↓
+Razorpay Test Mode connection
+  ↓
+Failed test payment
+  ↓
 payment.failed webhook
-        ↓
+  ↓
 Signature verification + deduplication
-        ↓
+  ↓
 MongoDB recovery case
-        ↓
-local-recovery-v2 scoring
-        ↓
+  ↓
+local-recovery-v2
+  ↓
 Policy-bounded recommendation
-        ↓
-Razorpay Payment Link / recovery communication
-        ↓
-Verified Razorpay success event
-        ↓
-Recovered case + attributed amount
+  ↓
+Eligible recovery action
+  ↓
+Verified Razorpay success
+  ↓
+Recovered outcome
 ```
 
-The webhook endpoint is merchant-specific:
+Webhook route:
 
 ```text
 POST https://<public-host>/api/webhooks/razorpay/<merchant-id>
 ```
 
+For the current buildathon workflow, a merchant-controlled API-key connection is the practical Test Mode integration path. OAuth support is retained for a future provider-approved multi-merchant onboarding model.
+
 ## Demo mode vs production-oriented mode
 
-### `DEMO_MODE=true`
-
-- Synthetic cases can be loaded.
-- Authentication is bypassed for the demo workspace.
-- No provider credentials are required.
-- No live provider API calls are performed.
-- The demo success simulator can illustrate the recovery state transition.
-
-### `DEMO_MODE=false`
-
-- MongoDB is required.
-- Authentication and role checks are enforced.
-- Merchant data is scoped to the authenticated workspace.
-- Provider credentials are encrypted at rest.
-- Signed Razorpay webhooks are required for provider events.
-- Synthetic reset/success endpoints are disabled.
-- Real provider actions are available where configured.
-
-## API surface
-
-| Method | Endpoint | Purpose |
+| Capability | `DEMO_MODE=true` | `DEMO_MODE=false` |
 |---|---|---|
-| POST | `/api/auth/register` | Create merchant workspace and owner |
-| POST | `/api/auth/login` | Authenticate merchant user |
-| GET | `/api/auth/me` | Return authenticated identity |
-| GET | `/api/dashboard` | KPIs, visible cases and active policy |
-| GET | `/api/cases` | Recovery queue |
-| GET | `/api/cases/:id` | Case detail |
-| POST | `/api/cases/:id/evaluate` | Run policy + AI evaluation |
-| POST | `/api/cases/:id/execute` | Execute bounded recovery action |
-| POST | `/api/cases/:id/stop` | Stop future automation |
-| GET | `/api/policy` | Read merchant guardrails |
-| PUT | `/api/policy` | Update merchant guardrails |
-| GET | `/api/audit` | Audit events |
-| GET | `/api/merchant` | Merchant profile data |
-| GET | `/api/integrations/razorpay` | Connection status |
-| POST | `/api/integrations/razorpay` | Connect/verify Razorpay |
-| DELETE | `/api/integrations/razorpay` | Revoke connection |
-| POST | `/api/webhooks/razorpay/:merchantId` | Receive signed Razorpay events |
-| GET | `/api/phase2/queue` | Queue health |
-| GET | `/api/phase2/experiments` | List experiments |
-| POST | `/api/phase2/experiments` | Create experiment |
-| GET | `/api/phase2/experiments/metrics` | Experiment outcome metrics |
-| GET | `/api/phase2/cases/:caseId/communications` | Communication audit |
-| POST | `/api/cases/:id/simulate-success` | Demo-only recovery simulation |
-| POST | `/api/demo/reset` | Demo-only synthetic cohort reset |
+| Authentication | Synthetic demo workspace | JWT + RBAC required |
+| Data | Synthetic recovery data | Merchant-scoped MongoDB data |
+| Provider credentials | Not required | Encrypted merchant connection |
+| Provider API calls | Disabled | Available when configured |
+| Success simulation | Available | Blocked |
+| Demo reset | Available | Blocked |
+| Signed webhooks | Not required for synthetic demo | Required for provider events |
+
+## API and deeper documentation
+
+- [`architecture.md`](./architecture.md) — system design, trust boundaries and lifecycle.
+- [`docs/AI.md`](./docs/AI.md) — model, signals, decision logic and LLM boundary.
+- [`docs/API.md`](./docs/API.md) — endpoint reference and security invariants.
+- [`docs/PHASE2.md`](./docs/PHASE2.md) — queue, communication, experiments and operational capabilities.
+- [`docs/SECURITY.md`](./docs/SECURITY.md) — security and trust model.
+- [`docs/PRODUCTION.md`](./docs/PRODUCTION.md) — deployment and Live Mode hardening boundary.
+- [`docs/DEMO_SCRIPT.md`](./docs/DEMO_SCRIPT.md) — final judge recording flow.
+- [`docs/FINAL_SUBMISSION.md`](./docs/FINAL_SUBMISSION.md) — final review checklist.
 
 ## Repository map
 
@@ -275,18 +288,8 @@ RazCodePay/
     └── src/
 ```
 
-## Submission-ready boundary
+## Submission boundary
 
-This repository is designed to demonstrate a complete, provider-grounded recovery workflow in Razorpay Test Mode. It is **production-oriented**, not presented as a fully operated public SaaS.
+This repository demonstrates a complete, provider-grounded recovery control plane in local and Razorpay Test Mode environments. It is **production-oriented**, not presented as an already-operated public Live Mode SaaS.
 
-Before a public Live Mode launch, the remaining work includes managed infrastructure, backups, centralized observability, secret rotation, security testing, messaging-provider delivery/bounce handling, stronger model calibration from production outcomes, and completion of any Razorpay Technology Partner/OAuth onboarding required for the intended multi-merchant operating model.
-
-## Judge starting points
-
-- **Architecture:** [`architecture.md`](./architecture.md)
-- **AI design:** [`docs/AI.md`](./docs/AI.md)
-- **API reference:** [`docs/API.md`](./docs/API.md)
-- **Demo script:** [`docs/DEMO_SCRIPT.md`](./docs/DEMO_SCRIPT.md)
-- **Phase 2 capabilities:** [`docs/PHASE2.md`](./docs/PHASE2.md)
-- **Deployment/security boundary:** [`docs/PRODUCTION.md`](./docs/PRODUCTION.md) and [`docs/SECURITY.md`](./docs/SECURITY.md)
-- **Final submission checklist:** [`docs/FINAL_SUBMISSION.md`](./docs/FINAL_SUBMISSION.md)
+For public Live Mode, remaining work includes managed infrastructure, backups, centralized observability, secret rotation, formal security testing, messaging delivery/bounce handling, production model calibration, operational runbooks, and any Razorpay Technology Partner/OAuth onboarding required for the intended multi-merchant model.
