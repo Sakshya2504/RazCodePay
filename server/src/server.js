@@ -7,6 +7,7 @@ import { connectDatabase } from './db.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerCaseRoutes } from './routes/cases.js';
 import { registerDemoRoutes } from './routes/demo.js';
+import { startRecoveryWorker, stopRecoveryWorker } from './worker.js';
 import { RecoveryCase } from './models/RecoveryCase.js';
 
 const app = express();
@@ -24,33 +25,38 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     track: '03',
     database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    worker: 'running',
   });
 });
 
-app.get('/api/recovery/summary', async (req, res) => {
-  const merchantId = req.get('X-RazCodePay-Merchant-Id') || 'demo-merchant';
-  const [summary] = await RecoveryCase.aggregate([
-    { $match: { merchantId } },
-    {
-      $group: {
-        _id: null,
-        revenueAtRisk: { $sum: { $cond: [{ $ne: ['$state', 'recovered'] }, '$amountMinor', 0] } },
-        recoveredRevenue: { $sum: '$recoveredAmountMinor' },
-        totalCases: { $sum: 1 },
-        openCases: { $sum: { $cond: [{ $in: ['$state', ['detected', 'enriched', 'awaiting_window', 'planned', 'executing', 'monitoring']] }, 1, 0] } },
-        recoveredCases: { $sum: { $cond: [{ $eq: ['$state', 'recovered'] }, 1, 0] } },
+app.get('/api/recovery/summary', async (req, res, next) => {
+  try {
+    const merchantId = req.get('X-RazCodePay-Merchant-Id') || 'demo-merchant';
+    const [summary] = await RecoveryCase.aggregate([
+      { $match: { merchantId } },
+      {
+        $group: {
+          _id: null,
+          revenueAtRisk: { $sum: { $cond: [{ $ne: ['$state', 'recovered'] }, '$amountMinor', 0] } },
+          recoveredRevenue: { $sum: '$recoveredAmountMinor' },
+          totalCases: { $sum: 1 },
+          openCases: { $sum: { $cond: [{ $in: ['$state', ['detected', 'enriched', 'awaiting_window', 'planned', 'executing', 'monitoring']] }, 1, 0] } },
+          recoveredCases: { $sum: { $cond: [{ $eq: ['$state', 'recovered'] }, 1, 0] } },
+        },
       },
-    },
-  ]);
+    ]);
 
-  const data = summary || { revenueAtRisk: 0, recoveredRevenue: 0, totalCases: 0, openCases: 0, recoveredCases: 0 };
-  res.json({
-    revenueAtRisk: data.revenueAtRisk,
-    recoveredRevenue: data.recoveredRevenue,
-    recoveryRate: data.totalCases ? data.recoveredCases / data.totalCases : 0,
-    openCases: data.openCases,
-    totalCases: data.totalCases,
-  });
+    const data = summary || { revenueAtRisk: 0, recoveredRevenue: 0, totalCases: 0, openCases: 0, recoveredCases: 0 };
+    return res.json({
+      revenueAtRisk: data.revenueAtRisk,
+      recoveredRevenue: data.recoveredRevenue,
+      recoveryRate: data.totalCases ? data.recoveredCases / data.totalCases : 0,
+      openCases: data.openCases,
+      totalCases: data.totalCases,
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 registerWebhookRoutes(app);
@@ -70,6 +76,7 @@ async function start() {
   app.listen(config.port, () => {
     console.log(`RazCodePay Recovery API running on port ${config.port}`);
   });
+  startRecoveryWorker();
 }
 
 start().catch((error) => {
@@ -77,12 +84,12 @@ start().catch((error) => {
   process.exit(1);
 });
 
-process.on('SIGINT', async () => {
+async function shutdown(signal) {
+  console.log(`${signal} received. Shutting down cleanly...`);
+  stopRecoveryWorker();
   await mongoose.disconnect();
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', async () => {
-  await mongoose.disconnect();
-  process.exit(0);
-});
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
