@@ -96,7 +96,97 @@ td:nth-child(4),
   text-transform: capitalize;
 }
 
+/* Merchant account / profile menu. */
+.profile-menu {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 1200;
+}
+
+.profile-trigger {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 188px;
+  padding: 6px 9px 6px 6px;
+  border: 1px solid var(--line, rgba(255,255,255,.1));
+  border-radius: 14px;
+  background: rgba(12,21,34,.92);
+  color: var(--text, #fff);
+  box-shadow: 0 10px 30px rgba(0,0,0,.18);
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+}
+
+.profile-trigger:hover { transform: translateY(-1px); }
+.profile-avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #7ce2c8, #8aa6ff);
+  color: #0c1522;
+  font-size: 11px;
+  font-weight: 800;
+}
+.profile-avatar-large { width: 42px; height: 42px; flex-basis: 42px; border-radius: 12px; }
+.profile-trigger-copy { min-width: 0; text-align: left; }
+.profile-trigger-copy strong,
+.profile-trigger-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-trigger-copy strong { font-size: 12px; }
+.profile-trigger-copy small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.profile-caret { margin-left: auto; font-size: 15px; color: var(--muted); transition: transform .18s ease; }
+.profile-caret-open { transform: rotate(180deg); }
+
+.profile-popover {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid var(--line, rgba(255,255,255,.1));
+  border-radius: 16px;
+  background: var(--panel, #101c2c);
+  color: var(--text, #fff);
+  box-shadow: 0 22px 55px rgba(0,0,0,.32);
+  backdrop-filter: blur(18px);
+}
+
+.profile-summary { display: flex; align-items: center; gap: 10px; padding: 8px 6px 12px; border-bottom: 1px solid var(--line, rgba(255,255,255,.08)); }
+.profile-summary strong, .profile-summary span, .profile-summary small { display: block; }
+.profile-summary strong { font-size: 13px; }
+.profile-summary span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.profile-summary small { margin-top: 4px; font-size: 10px; }
+
+.profile-status-row { display: flex; align-items: center; gap: 9px; margin: 10px 0 4px; padding: 9px; border-radius: 11px; background: rgba(124,226,200,.055); }
+.profile-status-row strong, .profile-status-row small { display: block; }
+.profile-status-row strong { font-size: 11px; }
+.profile-status-row small { margin-top: 2px; color: var(--muted); font-size: 9px; }
+.profile-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #ffb36b; box-shadow: 0 0 0 4px rgba(255,179,107,.08); }
+.profile-status-dot.connected { background: #7ce2c8; box-shadow: 0 0 0 4px rgba(124,226,200,.08); }
+
+.profile-section-label { padding: 10px 8px 6px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .14em; }
+.profile-item { display: flex; align-items: center; gap: 10px; padding: 9px 8px; border-radius: 10px; }
+.profile-item > span { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; background: rgba(138,166,255,.08); color: #8aa6ff; font-size: 11px; }
+.profile-item strong, .profile-item small { display: block; }
+.profile-item strong { font-size: 11px; }
+.profile-item small { margin-top: 2px; color: var(--muted); font-size: 9px; }
+
+.profile-logout { width: 100%; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 8px; border: 1px solid rgba(255,105,105,.14); border-radius: 10px; background: rgba(255,105,105,.045); color: #ffb4b4; text-align: left; cursor: pointer; }
+.profile-logout:hover { background: rgba(255,105,105,.08); }
+.profile-logout > span { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; background: rgba(255,105,105,.08); }
+.profile-logout strong, .profile-logout small { display: block; }
+.profile-logout strong { font-size: 11px; }
+.profile-logout small { margin-top: 2px; color: rgba(255,180,180,.72); font-size: 9px; }
+
 @media (max-width: 760px) {
+  .profile-menu { right: 10px; top: 10px; }
+  .profile-trigger { min-width: 0; }
+  .profile-trigger-copy { display: none; }
+  .profile-popover { width: min(300px, calc(100vw - 20px)); }
   .sidebar nav button:nth-child(n)::after { font-size: 9px; }
   .brand-lockup .muted::after { font-size: 11px; }
 }
